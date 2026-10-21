@@ -375,6 +375,8 @@ local function Apply(name)
 	local _, class = UnitClass("player")
 	local sameClass = (snap.class == class)
 	wipe(steps); wipe(report)
+	-- a copy of the macros as they are now, so an apply can be undone
+	db.macroBackup = { char = PlayerKey(), date = date("%Y-%m-%d %H:%M"), macros = ReadMacros() }
 	Report(("Applying '%s' (from %s) to %s."):format(name, snap.char, PlayerKey()))
 
 	if o.macros then steps[#steps + 1] = function() ApplyMacros(snap, o) end end
@@ -500,6 +502,15 @@ local function Options()
 	ap.args.apply = { type = "execute", order = 71, name = "Apply to this character", disabled = function() return not db.selected or not db.snapshots[db.selected] end,
 		confirm = true, confirmText = "Replace the chosen things of this character with the setup?",
 		func = function() Apply(db.selected) end }
+	ap.args.undo = { type = "execute", order = 71.5, name = "Restore the macros from before the last apply",
+		desc = function() return db.macroBackup and ("Put the macros back as they were on " .. db.macroBackup.date .. " (" .. db.macroBackup.char .. "). Macros created by the apply are kept.") or "Nothing to restore yet." end,
+		disabled = function() return not db.macroBackup end,
+		confirm = true, confirmText = "Restore the macros from the backup?",
+		func = function()
+			wipe(report)
+			ApplyMacros({ macros = db.macroBackup.macros }, { generalMacros = true })
+			for _, line in ipairs(report) do Say(line) end
+		end }
 	ap.args.reload = { type = "execute", order = 72, name = "Reload the interface", func = function() ReloadUI() end }
 	if db.lastResult then
 		ap.args.resultHeader = { type = "header", order = 80, name = "Last result" }
