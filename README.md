@@ -8,8 +8,8 @@ Set up one character, then copy that setup to your other characters of the same 
 
 ## What is copied
 - **Action bars:** every slot (also the stance / bonus bars). Spells are matched by name and use the highest rank the character knows; macros by name; items by id. Anything the character does not have yet is skipped and listed. Optional: also empty the slots that are empty in the setup. Skipped when the setup is from another class.
-- **Keybinds:** all key bindings of the game, including the ones that point to macros, spells and bar buttons (Bartender4, BindPad). Optional: keep the keybinds you already have.
-- **Macros** of the character: created, or updated when a macro with the same name exists. Optional: also the general macros, and delete the character macros that are not in the setup. Done before the bars so the bars can use them.
+- **Keybinds:** all key bindings of the game, including the ones that point to macros, spells and bar buttons (Bartender4, BindPad). They are always written to the character's own binding set ("character specific key bindings"), never to the account set that other characters may share. Optional: keep the keybinds you already have.
+- **Macros** of the character: created as local macros (kept in the game's `macros-cache.txt`), or updated when a macro with the same name exists. Macros that share a name are told apart by their position. Optional: also the general macros, and delete the character macros that are not in the setup. Done before the bars so the bars can use them.
 - **BindPad:** the character's BindPad slots and which profile each talent group uses.
 - **Addon profiles:** every addon that uses AceDB profiles (Bartender4, BigDebuffs, DBM and many more) is switched to the profile the saved character used. You can untick the addons you do not want. Nothing is copied: all your characters then use the same profile, so a change made on one shows on all.
 

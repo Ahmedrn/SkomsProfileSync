@@ -70,7 +70,14 @@ local function ReadBars()
 				if name then bars[slot] = { t = "spell", name = name, id = id } end
 			elseif kind == "macro" and id then
 				local name = GetMacroInfo(id)
-				if name then bars[slot] = { t = "macro", name = name } end
+				if name then
+					local perChar = id > MAX_ACCOUNT
+					local nth = 0
+					for i = perChar and (MAX_ACCOUNT + 1) or 1, id - 1 do
+						if GetMacroInfo(i) == name then nth = nth + 1 end
+					end
+					bars[slot] = { t = "macro", name = name, perChar = perChar, nth = nth }
+				end
 			elseif kind == "item" and id then
 				bars[slot] = { t = "item", id = id, name = GetItemInfo(id) }
 			elseif kind == "companion" and id then
@@ -166,51 +173,92 @@ local function IconIndex(texture)
 	return 1
 end
 
+-- the macro called name: perChar true = character macros, false = general, nil = any; nth = which one if several share the name
+local function FindMacro(name, perChar, nth)
+	local first, last = 1, MAX_ACCOUNT + MAX_CHAR
+	if perChar == true then first = MAX_ACCOUNT + 1 elseif perChar == false then last = MAX_ACCOUNT end
+	local seen = 0
+	for i = first, last do
+		if GetMacroInfo(i) == name then
+			if seen == (nth or 0) then return i end
+			seen = seen + 1
+		end
+	end
+end
+
 local function ApplyMacros(snap, o)
-	local made, edited, failed = 0, 0, 0
-	local wanted = {}
-	for _, m in ipairs(snap.macros) do
-		if m.perChar or o.generalMacros then
-			wanted[m.name] = true
-			local index = GetMacroIndexByName(m.name)
-			if index and index > 0 then
-				pcall(EditMacro, index, m.name, m.icon, m.body)
-				if select(3, GetMacroInfo(index)) ~= m.body then pcall(EditMacro, index, m.name, IconIndex(m.icon), m.body) end
-				edited = edited + 1
-			else
-				local ok = pcall(CreateMacro, m.name, m.icon, m.body, nil, m.perChar and 1 or nil)
-				local idx = GetMacroIndexByName(m.name)
-				if not (ok and idx and idx > 0) then
-					ok = pcall(CreateMacro, m.name, IconIndex(m.icon), m.body, nil, m.perChar and 1 or nil)
-					idx = GetMacroIndexByName(m.name)
-				end
-				if ok and idx and idx > 0 then
-					if m.perChar and idx <= MAX_ACCOUNT then
-						-- created as a general macro by mistake: redo it as a character macro
-						DeleteMacro(idx)
-						pcall(CreateMacro, m.name, m.icon, m.body, 1)
-						idx = GetMacroIndexByName(m.name)
-					end
-					made = made + 1
-				else
-					failed = failed + 1
+	local made, edited, same, failed, deleted = 0, 0, 0, 0, 0
+	local claimed = {}
+	local function range(perChar)
+		if perChar then return MAX_ACCOUNT + 1, MAX_ACCOUNT + MAX_CHAR end
+		return 1, MAX_ACCOUNT
+	end
+	-- an existing macro of the same name that no earlier macro of the setup has taken (same body first)
+	local function Find(m)
+		local first, last = range(m.perChar)
+		for i = first, last do
+			local n, _, b = GetMacroInfo(i)
+			if n == m.name and b == m.body and not claimed[i] then return i, true end
+		end
+		for i = first, last do
+			local n = GetMacroInfo(i)
+			if n == m.name and not claimed[i] then return i, false end
+		end
+	end
+	-- the macros are local ones (kept in macros-cache.txt); the second variant is for clients with the other argument order
+	local function Create(m)
+		local perChar = m.perChar and 1 or nil
+		local variants = {
+			function(icon) return CreateMacro(m.name, icon, m.body, 1, perChar) end,
+			function(icon) return CreateMacro(m.name, icon, m.body, nil, perChar) end,
+		}
+		for _, variant in ipairs(variants) do
+			for _, icon in ipairs({ m.icon or "INV_Misc_QuestionMark", IconIndex(m.icon) }) do
+				local a1, c1 = GetNumMacros()
+				pcall(variant, icon)
+				local a2, c2 = GetNumMacros()
+				if (m.perChar and c2 > c1) or (not m.perChar and a2 > a1) then
+					local idx = Find(m)
+					if idx then return idx end
+				elseif c2 > c1 and not m.perChar then
+					DeleteMacro(MAX_ACCOUNT + c2)      -- made a character macro by mistake
+				elseif a2 > a1 and m.perChar then
+					DeleteMacro(a2)                    -- made a general macro by mistake
 				end
 			end
 		end
 	end
-	local deleted = 0
+	for _, m in ipairs(snap.macros) do
+		if m.perChar or o.generalMacros then
+			local idx, exact = Find(m)
+			if idx then
+				claimed[idx] = true
+				if exact then
+					same = same + 1
+				else
+					pcall(EditMacro, idx, m.name, m.icon, m.body)
+					if select(3, GetMacroInfo(idx)) ~= m.body then pcall(EditMacro, idx, m.name, IconIndex(m.icon), m.body) end
+					edited = edited + 1
+				end
+			else
+				idx = Create(m)
+				if idx then claimed[idx] = true; made = made + 1 else failed = failed + 1 end
+			end
+		end
+	end
 	if o.deleteOtherMacros then
 		local _, numChar = GetNumMacros()
 		for i = MAX_ACCOUNT + numChar, MAX_ACCOUNT + 1, -1 do
-			local name = GetMacroInfo(i)
-			if name and not wanted[name] then DeleteMacro(i); deleted = deleted + 1 end
+			if GetMacroInfo(i) and not claimed[i] then DeleteMacro(i); deleted = deleted + 1 end
 		end
 	end
-	Report(("Macros: %d created, %d updated%s%s."):format(made, edited, failed > 0 and (", " .. failed .. " failed (full?)") or "",
-		deleted > 0 and (", " .. deleted .. " deleted") or ""))
+	Report(("Macros: %d created, %d updated, %d already right%s%s."):format(made, edited, same,
+		failed > 0 and (", " .. failed .. " could not be created (full?)") or "", deleted > 0 and (", " .. deleted .. " deleted") or ""))
 end
 
 local function ApplyBindings(snap, o)
+	-- always the character's own set: the account set belongs to every character that has none of its own
+	LoadBindings(2)
 	if not o.keepOtherKeybinds then
 		local all = {}
 		for i = 1, GetNumBindings() do
@@ -227,8 +275,8 @@ local function ApplyBindings(snap, o)
 			if SetBinding(key, b.cmd) then n = n + 1 end
 		end
 	end
-	SaveBindings(GetCurrentBindingSet())
-	Report(("Keybinds: %d keys set."):format(n))
+	SaveBindings(2)
+	Report(("Keybinds: %d keys set (for this character only)."):format(n))
 end
 
 local function SpellBookMap()
@@ -254,7 +302,7 @@ local function SlotAlready(slot, e)
 	if not HasAction(slot) then return false end
 	local kind, id = GetActionInfo(slot)
 	if e.t == "spell" and kind == "spell" then return GetSpellInfo(id) == e.name end
-	if e.t == "macro" and kind == "macro" then return GetMacroInfo(id) == e.name end
+	if e.t == "macro" and kind == "macro" then return id == FindMacro(e.name, e.perChar, e.nth) end
 	if e.t == "item" and kind == "item" then return id == e.id end
 	return false
 end
@@ -271,8 +319,8 @@ local function ApplySlots(snap, o, book, from, to)
 				if e.t == "spell" then
 					if book[e.name] then PickupSpell(book[e.name], BOOKTYPE_SPELL) end
 				elseif e.t == "macro" then
-					local idx = GetMacroIndexByName(e.name)
-					if idx and idx > 0 then PickupMacro(idx) end
+					local idx = FindMacro(e.name, e.perChar, e.nth)
+					if idx then PickupMacro(idx) end
 				elseif e.t == "item" then
 					PickupItem(e.id)
 				elseif e.t == "companion" then
@@ -308,16 +356,14 @@ local function ApplyProfiles(snap)
 			if want and not db.profileOff[svn] then
 				if dbo:GetCurrentProfile() == want then
 					-- already the same
-				elseif dbo.sv.profiles and dbo.sv.profiles[want] then
-					dbo:SetProfile(want)
-					switched = switched + 1
 				else
-					skipped[#skipped + 1] = svn
+					local ok = pcall(dbo.SetProfile, dbo, want)
+					if ok then switched = switched + 1 else skipped[#skipped + 1] = svn end
 				end
 			end
 		end
 	end
-	Report(("Addon profiles: %d switched%s."):format(switched, #skipped > 0 and (", not found here: " .. table.concat(skipped, ", ")) or ""))
+	Report(("Addon profiles: %d switched%s."):format(switched, #skipped > 0 and (", failed: " .. table.concat(skipped, ", ")) or ""))
 end
 
 local function Apply(name)
