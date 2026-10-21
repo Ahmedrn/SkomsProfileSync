@@ -1,0 +1,11 @@
+## Interface: 30300
+## Title: SkomsProfileSync
+## Notes: Set up one character, then copy its action bars, keybinds, macros, BindPad profile and addon profiles to your other characters. Type /sps.
+## Version: 1.0.0
+## Author: Skom
+## SavedVariables: SkomsProfileSyncDB
+## OptionalDeps: LibStub, CallbackHandler-1.0, Bartender4, BindPad
+## X-Inspired-By: ActionBarSaver by Shadowed
+
+libs\embeds.xml
+SkomsProfileSync.lua
