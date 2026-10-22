@@ -55,14 +55,14 @@ local function ReadMacros()
 	local numAccount, numChar = GetNumMacros()
 	local function add(index, perChar)
 		local name, icon, body = GetMacroInfo(index)
-		if name then list[#list + 1] = { name = name, icon = icon, body = body or "", perChar = perChar } end
+		if name then list[#list + 1] = { name = name, icon = icon, body = body or "", perChar = perChar, index = index } end
 	end
 	for i = 1, numAccount do add(i, false) end
 	for i = 1, numChar do add(MAX_ACCOUNT + i, true) end
 	return list
 end
 
-local function ReadBars()
+local function ReadBars(macros)
 	local bars = {}
 	for slot = 1, NUM_SLOTS do
 		if HasAction(slot) then
@@ -79,7 +79,12 @@ local function ReadBars()
 					for i = perChar and (MAX_ACCOUNT + 1) or 1, id - 1 do
 						if GetMacroInfo(i) == name then nth = nth + 1 end
 					end
-					bars[slot] = { t = "macro", name = name, perChar = perChar, nth = nth }
+					-- which macro of the saved list it is: macros that share a name are told apart by this
+					local mi
+					for i, m in ipairs(macros or {}) do
+						if m.index == id then mi = i break end
+					end
+					bars[slot] = { t = "macro", name = name, perChar = perChar, nth = nth, mi = mi }
 				end
 			elseif kind == "item" and id then
 				bars[slot] = { t = "item", id = id, name = GetItemInfo(id) }
@@ -216,7 +221,7 @@ local function ReadAll()
 	local macros = ReadMacros()
 	return {
 		class = class, char = PlayerKey(), date = date("%Y-%m-%d %H:%M"),
-		bindings = AddExtraBindings(ReadBindings(), macros), macros = macros, bars = ReadBars(),
+		bindings = AddExtraBindings(ReadBindings(), macros), macros = macros, bars = ReadBars(macros),
 		profiles = ReadProfiles(), bindpad = ReadBindPad(), cvars = ReadCVars(), misc = ReadMisc(),
 	}
 end
@@ -430,6 +435,25 @@ local function FindMacro(name, perChar, nth)
 	end
 end
 
+-- saved macro number -> index of the macro on this character, filled by ApplyMacros
+local macroMap = {}
+
+-- the macro of this character that a bar slot of the setup stands for
+local function ResolveMacro(snap, e)
+	if e.mi and macroMap[e.mi] then return macroMap[e.mi] end
+	local sm = e.mi and snap.macros[e.mi]
+	if sm then
+		-- same name and same text first, so two macros with one name keep their own places
+		local first, last = 1, MAX_ACCOUNT + MAX_CHAR
+		if sm.perChar then first = MAX_ACCOUNT + 1 else last = MAX_ACCOUNT end
+		for i = first, last do
+			local n, _, b = GetMacroInfo(i)
+			if n == sm.name and b == sm.body then return i end
+		end
+	end
+	return FindMacro(e.name, e.perChar, e.nth)
+end
+
 local function ApplyMacros(snap, o)
 	local made, edited, same, failed, deleted = 0, 0, 0, 0, 0
 	local claimed = {}
@@ -472,11 +496,12 @@ local function ApplyMacros(snap, o)
 			end
 		end
 	end
-	for _, m in ipairs(snap.macros) do
+	for mi, m in ipairs(snap.macros) do
 		if m.perChar or o.generalMacros then
 			local idx, exact = Find(m)
 			if idx then
 				claimed[idx] = true
+				macroMap[mi] = idx
 				if exact then
 					same = same + 1
 				else
@@ -486,7 +511,7 @@ local function ApplyMacros(snap, o)
 				end
 			else
 				idx = Create(m)
-				if idx then claimed[idx] = true; made = made + 1 else failed = failed + 1 end
+				if idx then claimed[idx] = true; macroMap[mi] = idx; made = made + 1 else failed = failed + 1 end
 			end
 		end
 	end
@@ -542,11 +567,11 @@ local function CompanionIndex(kind, spellId)
 	end
 end
 
-local function SlotAlready(slot, e)
+local function SlotAlready(snap, slot, e)
 	if not HasAction(slot) then return false end
 	local kind, id = GetActionInfo(slot)
 	if e.t == "spell" and kind == "spell" then return (GetSpellName(id, BOOKTYPE_SPELL) or GetSpellInfo(id)) == e.name end
-	if e.t == "macro" and kind == "macro" then return id == FindMacro(e.name, e.perChar, e.nth) end
+	if e.t == "macro" and kind == "macro" then return id == ResolveMacro(snap, e) end
 	if e.t == "item" and kind == "item" then return id == e.id end
 	return false
 end
@@ -557,13 +582,13 @@ local function ApplySlots(snap, o, book, from, to)
 		local e = snap.bars[slot]
 		ClearCursor()
 		if e then
-			if SlotAlready(slot, e) then
+			if SlotAlready(snap, slot, e) then
 				stats.same = stats.same + 1
 			else
 				if e.t == "spell" then
 					if book[e.name] then PickupSpell(book[e.name], BOOKTYPE_SPELL) end
 				elseif e.t == "macro" then
-					local idx = FindMacro(e.name, e.perChar, e.nth)
+					local idx = ResolveMacro(snap, e)
 					if idx then PickupMacro(idx) end
 				elseif e.t == "item" then
 					PickupItem(e.id)
@@ -618,7 +643,7 @@ local function ApplySnap(snap, label, o, isRestore)
 	if runner:IsShown() then Say("Already applying.") return end
 	local _, class = UnitClass("player")
 	local sameClass = (snap.class == class)
-	wipe(steps); wipe(report)
+	wipe(steps); wipe(report); wipe(macroMap)
 	if not isRestore then PushBackup() end
 	Report(("%s '%s' (from %s) on %s."):format(isRestore and "Restoring" or "Applying", label, snap.char, PlayerKey()))
 
