@@ -366,6 +366,93 @@ local function ScanFrozen(remove)
 	return total, orphans, nodes
 end
 
+-- profile names that are never deleted (one per line)
+local function IsProtected(name)
+	for line in (db.protect or "Default"):gmatch("[^\r\n]+") do
+		if strtrim(line):lower() == name:lower() then return true end
+	end
+	return false
+end
+
+-- every profile of the AceDB addons that nothing uses: no character, no saved setup, older version or backup.
+-- scope "sync" = only the frozen copies of this addon, "all" = any name
+local function FindUnused(scope)
+	local list = {}
+	EachDB(function(dbo, svn)
+		local names = {}
+		for pname in pairs(dbo.sv.profiles or {}) do names[pname] = true end
+		for _, nsv in pairs(dbo.sv.namespaces or {}) do
+			if type(nsv) == "table" and nsv.profiles then
+				for pname in pairs(nsv.profiles) do names[pname] = true end
+			end
+		end
+		for pname in pairs(names) do
+			if type(pname) == "string" and not IsProtected(pname)
+				and (scope == "all" or pname:find("_sync_", 1, true))
+				and not ProfileInUse(svn, pname, dbo) then
+				list[#list + 1] = { dbo = dbo, svn = svn, name = pname }
+			end
+		end
+	end)
+	table.sort(list, function(a, b)
+		if a.svn ~= b.svn then return a.svn < b.svn end
+		return a.name < b.name
+	end)
+	return list
+end
+
+-- the deleted profiles go to a bin (the last cleanup only) so that it can be undone
+local function DeleteUnused(scope)
+	local list = FindUnused(scope)
+	if #list == 0 then return 0 end
+	local items = {}
+	for _, e in ipairs(list) do
+		local sv = e.dbo.sv
+		local item = { svn = e.svn, name = e.name, ns = {} }
+		if sv.profiles and sv.profiles[e.name] ~= nil then
+			item.root = sv.profiles[e.name]
+			sv.profiles[e.name] = nil
+		end
+		for k, nsv in pairs(sv.namespaces or {}) do
+			if type(nsv) == "table" and nsv.profiles and nsv.profiles[e.name] ~= nil then
+				item.ns[k] = nsv.profiles[e.name]
+				nsv.profiles[e.name] = nil
+			end
+		end
+		items[#items + 1] = item
+	end
+	db.trash = { date = date("%Y-%m-%d %H:%M"), items = items }
+	return #list
+end
+
+local function RestoreDeleted()
+	local t = db.trash
+	if not t then return 0 end
+	local dbs = {}
+	EachDB(function(dbo, svn) dbs[svn] = dbo end)
+	local n = 0
+	for _, it in ipairs(t.items) do
+		local dbo = dbs[it.svn]
+		if dbo then
+			local sv = dbo.sv
+			if it.root ~= nil then
+				sv.profiles = sv.profiles or {}
+				if sv.profiles[it.name] == nil then sv.profiles[it.name] = it.root end
+			end
+			for k, data in pairs(it.ns) do
+				local nsv = sv.namespaces and sv.namespaces[k]
+				if nsv then
+					nsv.profiles = nsv.profiles or {}
+					if nsv.profiles[it.name] == nil then nsv.profiles[it.name] = data end
+				end
+			end
+			n = n + 1
+		end
+	end
+	db.trash = nil
+	return n
+end
+
 -- apply the limits to what is stored
 local function Trim()
 	for _, list in pairs(db.history) do
@@ -884,16 +971,60 @@ local function Options()
 	st.args.keepBackups = { type = "range", order = 3, name = "Backups kept", width = "double", min = 1, max = 20, step = 1,
 		desc = "A backup of the character is made before every apply.",
 		get = function() return KeepBackups() end, set = function(_, v) db.keepBackups = v; Trim() end }
-	st.args.clean = { type = "execute", order = 4, name = "Delete the frozen profiles that nothing uses",
-		desc = "Frozen profiles (named ..._sync_...) that no saved setup, older version, backup or character uses. Safe to delete.",
+	st.args.cleanHeader = { type = "header", order = 6, name = "Unused profiles" }
+	st.args.cleanInfo = { type = "description", order = 7, fontSize = "medium",
+		name = "Addon profiles pile up: every character and every save can leave one behind. A profile is unused when no character, no saved setup, no older version and no backup uses it. "
+			.. "The profile \"Default\" and the names in the protected list below are never deleted." }
+	st.args.scope = { type = "select", order = 8, name = "Which profiles", width = "double",
+		values = { sync = "Only the frozen copies of this addon (..._sync_...)", all = "Every unused profile of every addon" },
+		get = function() return db.cleanScope or "sync" end, set = function(_, v) db.cleanScope = v end }
+	st.args.list = { type = "description", order = 9,
+		name = function()
+			local list = FindUnused(db.cleanScope or "sync")
+			if #list == 0 then return "Nothing to delete." end
+			local lines, shown, perAddon = {}, 0, {}
+			for _, e in ipairs(list) do
+				perAddon[e.svn] = perAddon[e.svn] or {}
+				table.insert(perAddon[e.svn], e.name)
+			end
+			local addons = {}
+			for svn in pairs(perAddon) do addons[#addons + 1] = svn end
+			table.sort(addons)
+			for _, svn in ipairs(addons) do
+				if shown >= 30 then lines[#lines + 1] = "..." break end
+				local names = perAddon[svn]
+				local text = table.concat(names, ", ", 1, math.min(#names, 4)) .. (#names > 4 and (" ... +" .. (#names - 4)) or "")
+				lines[#lines + 1] = ("|cffffd100%s|r (%d): %s"):format(svn, #names, text)
+				shown = shown + 1
+			end
+			return ("%d unused profile(s) in %d addon(s):\n%s"):format(#list, #addons, table.concat(lines, "\n"))
+		end }
+	st.args.cleanBtn = { type = "execute", order = 10, width = "double",
+		name = function() return ("Delete %d unused profile(s)"):format(#FindUnused(db.cleanScope or "sync")) end,
+		disabled = function() return #FindUnused(db.cleanScope or "sync") == 0 end,
+		confirm = function()
+			return ("Delete %d profile(s)? You can undo the last cleanup with the button below, but the cleanup before it can no longer be undone."):format(#FindUnused(db.cleanScope or "sync"))
+		end,
 		func = function()
-			local _, removed = ScanFrozen(true)
-			Say(removed .. " unused frozen profile(s) deleted.")
+			local n = DeleteUnused(db.cleanScope or "sync")
+			Say(n .. " unused profile(s) deleted. Undo: Storage > Restore the deleted profiles.")
 			LibStub("AceConfigRegistry-3.0"):NotifyChange(ADDON)
 		end }
+	st.args.undoClean = { type = "execute", order = 11, width = "double",
+		name = function() return db.trash and ("Restore the deleted profiles (" .. #db.trash.items .. ", " .. db.trash.date .. ")") or "Restore the deleted profiles" end,
+		disabled = function() return not db.trash end,
+		func = function()
+			local n = RestoreDeleted()
+			Say(n .. " profile(s) restored.")
+			LibStub("AceConfigRegistry-3.0"):NotifyChange(ADDON)
+		end }
+	st.args.protect = { type = "input", order = 12, multiline = 4, width = "full", name = "Never delete these profiles (one name per line)",
+		desc = "For a profile you keep as a template and no character uses.",
+		get = function() return db.protect or "Default" end, set = function(_, v) db.protect = v or "" end }
 	st.args.note = { type = "description", order = 5,
 		name = "A save that changes nothing in an addon's profile reuses the previous frozen profile instead of making a new one." }
 	root.args.storage = st
+	root.args.about = ns.AboutGroup(99)
 	return root
 end
 

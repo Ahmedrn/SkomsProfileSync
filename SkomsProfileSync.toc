@@ -9,4 +9,5 @@
 
 libs\embeds.xml
 cvars.lua
+about.lua
 SkomsProfileSync.lua
