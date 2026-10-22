@@ -26,7 +26,7 @@ Before every apply, everything of the character it is applied to (bars, keybinds
 Not copied: talents and glyphs (the game does not allow it), and anything that is stored only for one character by an addon (SavedVariablesPerCharacter).
 
 ## Commands
-`/sps` opens the window. `/sps save <name>`, `/sps apply <name>`, `/sps list`, `/sps restore` (latest backup).
+`/sps` opens the window. `/sps save <name>`, `/sps apply <name>`, `/sps list`, `/sps restore` (latest backup), `/sps bars` (the spells saved on the bars of the selected setup).
 
 ## Install
 Put the `SkomsProfileSync` folder in `Interface\AddOns`. It only needs to be on the characters that you use it on (it can stay enabled everywhere).

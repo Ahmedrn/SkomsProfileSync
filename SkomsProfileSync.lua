@@ -848,6 +848,19 @@ SlashCmdList["SKOMSPROFILESYNC"] = function(msg)
 		Say(("'%s' saved: %s."):format(name, Summary(Save(name))))
 	elseif cmd == "apply" then
 		Apply(rest ~= "" and rest or db.selected)
+	elseif cmd == "bars" then
+		-- the spells, items and companions saved on the bars (macros are counted)
+		local snap = GetSnap(rest ~= "" and rest or db.selected)
+		if not snap then Say("No saved setup.") return end
+		local macros = 0
+		local slots = {}
+		for slot in pairs(snap.bars) do slots[#slots + 1] = slot end
+		table.sort(slots)
+		for _, slot in ipairs(slots) do
+			local e = snap.bars[slot]
+			if e.t == "macro" then macros = macros + 1 else Say(("slot %d: %s %s"):format(slot, e.t, tostring(e.name or e.id))) end
+		end
+		Say(("%d macros on the bars."):format(macros))
 	elseif cmd == "restore" then
 		RestoreBackup(tonumber(rest) or 1)
 	elseif cmd == "list" then
