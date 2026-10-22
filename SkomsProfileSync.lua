@@ -17,6 +17,7 @@ local DEFAULT_OPTS = {
 	bindpad = true,
 	profiles = true,
 	cvars = true,
+	forceOtherClass = false,
 }
 
 local function Copy(v)
@@ -485,12 +486,17 @@ local function ApplySnap(snap, label, o, isRestore)
 	if not isRestore then PushBackup() end
 	Report(("%s '%s' (from %s) on %s."):format(isRestore and "Restoring" or "Applying", label, snap.char, PlayerKey()))
 
-	if o.macros then steps[#steps + 1] = function() ApplyMacros(snap, o) end end
+	-- bars, macros and BindPad belong to a class: from another class they are only copied when the user forces it
+	local allowed = sameClass or o.forceOtherClass
+	if not allowed then
+		Report(("Skipped because the setup is from a %s and this is a %s: action bars, macros and BindPad (you can force it in /sps, Apply tab)."):format(
+			tostring(snap.class), tostring(class)))
+	end
+
+	if o.macros and allowed then steps[#steps + 1] = function() ApplyMacros(snap, o) end end
 	if o.keybinds then steps[#steps + 1] = function() ApplyBindings(snap, o) end end
-	if o.bars then
-		if not sameClass then
-			Report("Action bars skipped: the setup is from a " .. tostring(snap.class) .. ", this is a " .. tostring(class) .. ".")
-		else
+	if o.bars and allowed then
+		do
 			local book
 			steps[#steps + 1] = function()
 				book = SpellBookMap()
@@ -511,7 +517,7 @@ local function ApplySnap(snap, label, o, isRestore)
 			end
 		end
 	end
-	if o.bindpad and snap.bindpad then
+	if o.bindpad and allowed and snap.bindpad then
 		steps[#steps + 1] = function()
 			if BindPadVars then
 				BindPadVars[BindPadKey()] = Copy(snap.bindpad)
@@ -532,6 +538,9 @@ local function ApplySnap(snap, label, o, isRestore)
 		end
 	end
 	if o.profiles then steps[#steps + 1] = function() ApplyProfiles(snap, isRestore) end end
+	if not isRestore then
+		steps[#steps + 1] = function() Report("To undo everything: /sps restore, or Undo in the options.") end
+	end
 	runner:Show()
 end
 
@@ -621,6 +630,7 @@ local function Options()
 		ap.args[key] = { type = "toggle", order = order, width = "full", name = label, desc = desc,
 			get = function() return opts[key] end, set = function(_, v) opts[key] = v end, disabled = disabled }
 	end
+	toggle("forceOtherClass", "Copy bars, macros and BindPad even if the setup is from another class", "Off (default): when the class of the setup is not the class of this character, the action bars, the macros and the BindPad profile are skipped; keybinds, addon profiles and game settings are still copied.", 5)
 	toggle("bars", "Action bars", "Every slot of the bars (also the stance / bonus bars) gets the same spell, macro or item. Spells use your highest rank.", 10)
 	toggle("clearEmptySlots", "   Also empty the slots that are empty in the setup", "Off: slots that are empty in the setup keep what they have.", 11, function() return not opts.bars end)
 	toggle("keybinds", "Keybinds", "Every key binding of the game, including the ones that point to macros, spells and bar buttons.", 20)
@@ -646,7 +656,7 @@ local function Options()
 		ap.args.profileList = grp
 	end
 	ap.args.summary = { type = "description", order = 70, fontSize = "medium",
-		name = snap and ("Setup '" .. (snap.name or db.selected) .. "': " .. Summary(snap) .. (snap.class ~= select(2, UnitClass("player")) and ("\n|cffff5555This setup is from a " .. tostring(snap.class) .. ": the action bars will be skipped.|r") or "")) or "Save a setup first." }
+		name = snap and ("Setup '" .. (snap.name or db.selected) .. "': " .. Summary(snap) .. (snap.class ~= select(2, UnitClass("player")) and ("\n|cffff5555This setup is from a " .. tostring(snap.class) .. (opts.forceOtherClass and ": copied anyway, as you chose.|r" or ": the action bars, macros and BindPad will be skipped.|r")) or "")) or "Save a setup first." }
 	ap.args.apply = { type = "execute", order = 71, name = "Apply to this character", disabled = function() return not GetSnap(db.selected) end,
 		confirm = true, confirmText = "Replace the chosen things of this character with the setup?",
 		func = function() Apply(db.selected) end }
