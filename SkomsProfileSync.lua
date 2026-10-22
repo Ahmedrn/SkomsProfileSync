@@ -146,7 +146,26 @@ local function ReadAll()
 	}
 end
 
-local KEEP_VERSIONS, KEEP_BACKUPS = 5, 8
+local function KeepVersions() return db.keepVersions or 5 end
+local function KeepBackups() return db.keepBackups or 8 end
+
+-- rough size of a table in the saved file (about 16 bytes per value or key)
+local function Nodes(t, seen)
+	if type(t) ~= "table" then return 1 end
+	seen = seen or {}
+	if seen[t] then return 0 end
+	seen[t] = true
+	local n = 1
+	for _, v in pairs(t) do n = n + 2 + Nodes(v, seen) - 1 end
+	return n
+end
+
+local function DeepEqual(a, b)
+	if type(a) ~= "table" or type(b) ~= "table" then return a == b end
+	for k, v in pairs(a) do if not DeepEqual(v, b[k]) then return false end end
+	for k in pairs(b) do if a[k] == nil then return false end end
+	return true
+end
 
 local function EachDB(fn)
 	local AceDB = LibStub and LibStub("AceDB-3.0", true)
@@ -203,22 +222,30 @@ local function Save(name)
 	snap.name = name
 	local stamp = date("%Y%m%d_%H%M")
 	local frozen = 0
+	local old = db.snapshots[name]
 	EachDB(function(dbo, svn)
 		local cur = snap.profiles[svn]
 		if cur then
-			local new = ("%s_sync_%s"):format(name, stamp)
-			CopyProfileData(dbo, cur, new)
-			snap.profiles[svn] = new
-			frozen = frozen + 1
+			local prev = old and old.profiles and old.profiles[svn]
+			local sv = dbo.sv
+			local same = prev and prev:find("_sync_", 1, true) and sv.profiles and sv.profiles[prev]
+				and DeepEqual(sv.profiles[cur] or {}, sv.profiles[prev])
+			if same then
+				snap.profiles[svn] = prev      -- nothing changed since the last save: the same frozen profile
+			else
+				local new = ("%s_sync_%s"):format(name, stamp)
+				CopyProfileData(dbo, cur, new)
+				snap.profiles[svn] = new
+				frozen = frozen + 1
+			end
 		end
 	end)
 	snap.frozen = frozen
-	local old = db.snapshots[name]
 	if old then
 		-- the previous version is kept
 		db.history[name] = db.history[name] or {}
 		table.insert(db.history[name], 1, old)
-		while #db.history[name] > KEEP_VERSIONS do DropSyncProfiles(table.remove(db.history[name])) end
+		while #db.history[name] > KeepVersions() do DropSyncProfiles(table.remove(db.history[name])) end
 	end
 	db.snapshots[name] = snap
 	db.selected = name
@@ -229,8 +256,42 @@ end
 local function PushBackup()
 	local b = ReadAll()
 	table.insert(db.backups, 1, b)
-	while #db.backups > KEEP_BACKUPS do table.remove(db.backups) end
+	while #db.backups > KeepBackups() do table.remove(db.backups) end
 	return b
+end
+
+-- every frozen profile in the other addons' files; remove = true deletes the ones nothing uses
+local function ScanFrozen(remove)
+	local total, orphans, nodes = 0, 0, 0
+	EachDB(function(dbo, svn)
+		for pname in pairs(dbo.sv.profiles or {}) do
+			if type(pname) == "string" and pname:find("_sync_", 1, true) then
+				total = total + 1
+				nodes = nodes + Nodes(dbo.sv.profiles[pname])
+				for _, nsv in pairs(dbo.sv.namespaces or {}) do
+					if type(nsv) == "table" and nsv.profiles and nsv.profiles[pname] then nodes = nodes + Nodes(nsv.profiles[pname]) end
+				end
+				if not ProfileInUse(svn, pname, dbo) then
+					orphans = orphans + 1
+					if remove then
+						dbo.sv.profiles[pname] = nil
+						for _, nsv in pairs(dbo.sv.namespaces or {}) do
+							if type(nsv) == "table" and nsv.profiles then nsv.profiles[pname] = nil end
+						end
+					end
+				end
+			end
+		end
+	end)
+	return total, orphans, nodes
+end
+
+-- apply the limits to what is stored
+local function Trim()
+	for _, list in pairs(db.history) do
+		while #list > KeepVersions() do DropSyncProfiles(table.remove(list)) end
+	end
+	while #db.backups > KeepBackups() do table.remove(db.backups) end
 end
 
 local function GetSnap(key)
@@ -585,7 +646,7 @@ local function Options()
 		name = "Set up one character the way you like (action bars, keybinds, macros, BindPad, addon profiles, game settings), then save it here. "
 			.. "The setup is kept for the whole account, so you can apply it to your other characters.\n\n"
 			.. "Every save also makes a frozen copy of each addon profile, called <name>_sync_<date>_<time>, so later changes to this character do not change the setup. "
-			.. "The previous version of a setup is kept (the last " .. KEEP_VERSIONS .. ").\n\nThis character: " .. PlayerKey() }
+			.. "The previous version of a setup is kept (the last " .. KeepVersions() .. ").\n\nThis character: " .. PlayerKey() }
 	save.args.name = { type = "input", order = 2, name = "Name of the setup", width = "double",
 		get = function() return db.newName or select(2, UnitClass("player")) or "Setup" end,
 		set = function(_, v) db.newName = strtrim(v or "") end }
@@ -661,7 +722,7 @@ local function Options()
 		confirm = true, confirmText = "Replace the chosen things of this character with the setup?",
 		func = function() Apply(db.selected) end }
 	ap.args.undoHeader = { type = "header", order = 73, name = "Undo" }
-	ap.args.undoInfo = { type = "description", order = 74, name = "Before every apply, everything of this character (bars, keybinds, macros, BindPad, addon profile names, game settings) is saved. The last " .. KEEP_BACKUPS .. " backups are kept." }
+	ap.args.undoInfo = { type = "description", order = 74, name = "Before every apply, everything of this character (bars, keybinds, macros, BindPad, addon profile names, game settings) is saved. The last " .. KeepBackups() .. " backups are kept." }
 	ap.args.undoSel = { type = "select", order = 75, name = "Backup", width = "double", values = BackupValues,
 		get = function() return db.undoSel or (db.backups[1] and 1) end, set = function(_, v) db.undoSel = v end }
 	ap.args.undo = { type = "execute", order = 76, name = "Restore this backup", disabled = function() return #db.backups == 0 end,
@@ -673,6 +734,34 @@ local function Options()
 		ap.args.result = { type = "description", order = 81, name = db.lastResult }
 	end
 	root.args.apply = ap
+
+	-- tab 3: storage
+	local st = { type = "group", name = "Storage", order = 3, args = {} }
+	st.args.info = { type = "description", order = 1, fontSize = "medium",
+		name = function()
+			local versions = 0
+			for _, list in pairs(db.history) do versions = versions + #list end
+			local total, orphans, nodes = ScanFrozen(false)
+			return ("Setups: %d, older versions: %d, backups: %d.\nStored by this addon: about %d KB.\n"
+				.. "Frozen addon profiles in the files of the other addons: %d (about %d KB), %d of them used by nothing."):format(
+				CountKeys(db.snapshots), versions, #db.backups, math.floor(Nodes(db) * 16 / 1024), total, math.floor(nodes * 16 / 1024), orphans)
+		end }
+	st.args.keepVersions = { type = "range", order = 2, name = "Older versions kept per setup", width = "double", min = 0, max = 10, step = 1,
+		desc = "Saving a setup again keeps its previous version. Older ones are deleted, with the frozen addon profiles nothing else uses.",
+		get = function() return KeepVersions() end, set = function(_, v) db.keepVersions = v; Trim() end }
+	st.args.keepBackups = { type = "range", order = 3, name = "Backups kept", width = "double", min = 1, max = 20, step = 1,
+		desc = "A backup of the character is made before every apply.",
+		get = function() return KeepBackups() end, set = function(_, v) db.keepBackups = v; Trim() end }
+	st.args.clean = { type = "execute", order = 4, name = "Delete the frozen profiles that nothing uses",
+		desc = "Frozen profiles (named ..._sync_...) that no saved setup, older version, backup or character uses. Safe to delete.",
+		func = function()
+			local _, removed = ScanFrozen(true)
+			Say(removed .. " unused frozen profile(s) deleted.")
+			LibStub("AceConfigRegistry-3.0"):NotifyChange(ADDON)
+		end }
+	st.args.note = { type = "description", order = 5,
+		name = "A save that changes nothing in an addon's profile reuses the previous frozen profile instead of making a new one." }
+	root.args.storage = st
 	return root
 end
 

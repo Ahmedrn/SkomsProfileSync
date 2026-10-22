@@ -17,6 +17,9 @@ Set up one character, then copy that setup to your other characters of the same 
 ## Different classes
 Action bars, macros and the BindPad profile belong to a class. When the setup is from another class than the character you apply it to, they are skipped, and the Apply tab says so in red. Keybinds, addon profiles and game settings are still copied. Tick **Copy bars, macros and BindPad even if the setup is from another class** to force them.
 
+## Storage
+A setup takes about 45 KB, and a save adds a frozen copy of the addon profiles in use (about 20 KB in total, in the files of the addons themselves). A save that changes nothing in an addon reuses its previous frozen profile. Old versions and backups are limited (5 versions per setup and 8 backups by default, both adjustable) and the frozen profiles they leave behind are deleted when nothing uses them. The **Storage** tab shows the totals and has a button that deletes frozen profiles nothing uses.
+
 ## Backups
 Before every apply, everything of the character it is applied to (bars, keybinds, macros, BindPad, the names of the addon profiles, game settings) is saved; the last 8 backups are kept. **Undo > Restore this backup** puts it all back, including deleting the macros the apply created. `/sps restore` restores the latest one.
 
