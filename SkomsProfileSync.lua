@@ -790,7 +790,7 @@ local function Options()
 		n = n + 1
 		save.args["s" .. name] = { type = "description", order = 10 + n * 2, fontSize = "medium",
 			name = ("|cffffd100%s|r  from %s on %s\n%s"):format(name, snap.char, snap.date, Summary(snap)) }
-		save.args["d" .. name] = { type = "execute", order = 11 + n * 2, name = "Delete " .. name, width = "half",
+		save.args["d" .. name] = { type = "execute", order = 11 + n * 2, name = "Delete " .. name, width = "double",
 			confirm = true, confirmText = "Delete the setup '" .. name .. "' with its older versions and frozen addon profiles?",
 			func = function()
 				local old = db.snapshots[name]
