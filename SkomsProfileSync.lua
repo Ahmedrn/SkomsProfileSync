@@ -1024,7 +1024,7 @@ local function Options()
 	st.args.note = { type = "description", order = 5,
 		name = "A save that changes nothing in an addon's profile reuses the previous frozen profile instead of making a new one." }
 	root.args.storage = st
-	root.args.about = ns.AboutGroup(99)
+	if ns.AboutGroup then root.args.about = ns.AboutGroup(99) end   -- about.lua needs a full restart after an update
 	return root
 end
 
