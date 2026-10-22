@@ -1,6 +1,6 @@
 -- SkomsProfileSync: set up one character, then copy its action bars, keybinds, macros, BindPad profile and addon
 -- profiles to your other characters (same account). 3.3.5a.
-local ADDON = ...
+local ADDON, ns = ...
 
 local db
 local PREFIX = "|cff33ff99SkomsProfileSync|r: "
@@ -16,6 +16,7 @@ local DEFAULT_OPTS = {
 	macros = true, generalMacros = false, deleteOtherMacros = false,
 	bindpad = true,
 	profiles = true,
+	cvars = true,
 }
 
 local function Copy(v)
@@ -120,23 +121,129 @@ local function ReadBindPad()
 	if type(data) == "table" then return Copy(data) end
 end
 
-local function Save(name)
+-- a game setting by name; this client raises an error for a name that is not a console variable
+local function Get(cv)
+	local ok, v = pcall(GetCVar, cv)
+	if ok then return v end
+end
+
+local function ReadCVars()
+	local t = {}
+	for _, name in ipairs(ns.CVarNames or {}) do
+		local v = Get(name)
+		if v ~= nil then t[name] = tostring(v) end
+	end
+	return t
+end
+
+local function ReadAll()
 	local _, class = UnitClass("player")
-	local snap = {
+	return {
 		class = class, char = PlayerKey(), date = date("%Y-%m-%d %H:%M"),
 		bindings = ReadBindings(), macros = ReadMacros(), bars = ReadBars(),
-		profiles = ReadProfiles(), bindpad = ReadBindPad(),
+		profiles = ReadProfiles(), bindpad = ReadBindPad(), cvars = ReadCVars(),
 	}
+end
+
+local KEEP_VERSIONS, KEEP_BACKUPS = 5, 8
+
+local function EachDB(fn)
+	local AceDB = LibStub and LibStub("AceDB-3.0", true)
+	if not (AceDB and AceDB.db_registry) then return end
+	for dbo in pairs(AceDB.db_registry) do
+		if type(dbo) == "table" and not dbo.parent and dbo.sv and dbo.GetCurrentProfile then
+			local svn = SVName(dbo.sv)
+			if svn then fn(dbo, svn) end
+		end
+	end
+end
+
+-- a frozen copy of a profile (and of its part in every namespace): the saved setup keeps its own, later changes of the character do not touch it
+local function CopyProfileData(dbo, from, to)
+	local sv = dbo.sv
+	sv.profiles = sv.profiles or {}
+	sv.profiles[to] = Copy(sv.profiles[from] or {})
+	if sv.namespaces then
+		for _, nsv in pairs(sv.namespaces) do
+			if type(nsv) == "table" and nsv.profiles and nsv.profiles[from] then nsv.profiles[to] = Copy(nsv.profiles[from]) end
+		end
+	end
+end
+
+local function ProfileInUse(svn, pname, dbo)
+	if dbo:GetCurrentProfile() == pname then return true end
+	for _, v in pairs(dbo.sv.profileKeys or {}) do
+		if v == pname then return true end
+	end
+	local function uses(snap) return snap and snap.profiles and snap.profiles[svn] == pname end
+	for _, snap in pairs(db.snapshots) do if uses(snap) then return true end end
+	for _, list in pairs(db.history) do
+		for _, snap in ipairs(list) do if uses(snap) then return true end end
+	end
+	for _, snap in ipairs(db.backups) do if uses(snap) then return true end end
+	return false
+end
+
+-- the frozen profiles of a setup that was removed from the list, when nothing else uses them
+local function DropSyncProfiles(snap)
+	EachDB(function(dbo, svn)
+		local pname = snap.profiles and snap.profiles[svn]
+		if pname and pname:find("_sync_", 1, true) and not ProfileInUse(svn, pname, dbo) then
+			if dbo.sv.profiles then dbo.sv.profiles[pname] = nil end
+			for _, nsv in pairs(dbo.sv.namespaces or {}) do
+				if type(nsv) == "table" and nsv.profiles then nsv.profiles[pname] = nil end
+			end
+		end
+	end)
+end
+
+local function Save(name)
+	local snap = ReadAll()
+	snap.name = name
+	local stamp = date("%Y%m%d_%H%M")
+	local frozen = 0
+	EachDB(function(dbo, svn)
+		local cur = snap.profiles[svn]
+		if cur then
+			local new = ("%s_sync_%s"):format(name, stamp)
+			CopyProfileData(dbo, cur, new)
+			snap.profiles[svn] = new
+			frozen = frozen + 1
+		end
+	end)
+	snap.frozen = frozen
+	local old = db.snapshots[name]
+	if old then
+		-- the previous version is kept
+		db.history[name] = db.history[name] or {}
+		table.insert(db.history[name], 1, old)
+		while #db.history[name] > KEEP_VERSIONS do DropSyncProfiles(table.remove(db.history[name])) end
+	end
 	db.snapshots[name] = snap
 	db.selected = name
 	return snap
 end
 
+-- everything of the current character as it is now, taken before an apply
+local function PushBackup()
+	local b = ReadAll()
+	table.insert(db.backups, 1, b)
+	while #db.backups > KEEP_BACKUPS do table.remove(db.backups) end
+	return b
+end
+
+local function GetSnap(key)
+	if not key then return nil end
+	if db.snapshots[key] then return db.snapshots[key] end
+	local n, i = key:match("^(.*)#(%d+)$")
+	return n and db.history[n] and db.history[n][tonumber(i)] or nil
+end
+
 local function Summary(snap)
 	local charMacros = 0
 	for _, m in ipairs(snap.macros) do if m.perChar then charMacros = charMacros + 1 end end
-	return ("%d action slots, %d keybinds, %d macros (%d of the character), %d addon profiles%s"):format(
-		CountKeys(snap.bars), #snap.bindings, #snap.macros, charMacros, CountKeys(snap.profiles), snap.bindpad and ", a BindPad profile" or "")
+	return ("%d action slots, %d keybinds, %d macros (%d of the character), %d addon profiles, %d game settings%s"):format(
+		CountKeys(snap.bars), #snap.bindings, #snap.macros, charMacros, CountKeys(snap.profiles), CountKeys(snap.cvars), snap.bindpad and ", a BindPad profile" or "")
 end
 
 -- ---------------------------------------------------------------------------------------------------------
@@ -345,7 +452,7 @@ local function ApplySlots(snap, o, book, from, to)
 	end
 end
 
-local function ApplyProfiles(snap)
+local function ApplyProfiles(snap, all)
 	local AceDB = LibStub and LibStub("AceDB-3.0", true)
 	if not AceDB or not AceDB.db_registry then Report("Addon profiles: AceDB not found.") return end
 	local switched, skipped = 0, {}
@@ -353,7 +460,7 @@ local function ApplyProfiles(snap)
 		if type(dbo) == "table" and not dbo.parent and dbo.sv and dbo.GetCurrentProfile then
 			local svn = SVName(dbo.sv)
 			local want = svn and snap.profiles[svn]
-			if want and not db.profileOff[svn] then
+			if want and (all or not db.profileOff[svn]) then
 				if dbo:GetCurrentProfile() == want then
 					-- already the same
 				else
@@ -366,18 +473,17 @@ local function ApplyProfiles(snap)
 	Report(("Addon profiles: %d switched%s."):format(switched, #skipped > 0 and (", failed: " .. table.concat(skipped, ", ")) or ""))
 end
 
-local function Apply(name)
-	local snap = db.snapshots[name]
-	if not snap then Say("No saved setup called '" .. tostring(name) .. "'.") return end
+local RESTORE_OPTS = { bars = true, clearEmptySlots = true, keybinds = true, keepOtherKeybinds = false, macros = true,
+	generalMacros = true, deleteOtherMacros = true, bindpad = true, profiles = true, cvars = true }
+
+local function ApplySnap(snap, label, o, isRestore)
 	if InCombatLockdown() then Say("Not in combat.") return end
 	if runner:IsShown() then Say("Already applying.") return end
-	local o = db.opts
 	local _, class = UnitClass("player")
 	local sameClass = (snap.class == class)
 	wipe(steps); wipe(report)
-	-- a copy of the macros as they are now, so an apply can be undone
-	db.macroBackup = { char = PlayerKey(), date = date("%Y-%m-%d %H:%M"), macros = ReadMacros() }
-	Report(("Applying '%s' (from %s) to %s."):format(name, snap.char, PlayerKey()))
+	if not isRestore then PushBackup() end
+	Report(("%s '%s' (from %s) on %s."):format(isRestore and "Restoring" or "Applying", label, snap.char, PlayerKey()))
 
 	if o.macros then steps[#steps + 1] = function() ApplyMacros(snap, o) end end
 	if o.keybinds then steps[#steps + 1] = function() ApplyBindings(snap, o) end end
@@ -415,8 +521,30 @@ local function Apply(name)
 			end
 		end
 	end
-	if o.profiles then steps[#steps + 1] = function() ApplyProfiles(snap) end end
+	if o.cvars and snap.cvars then
+		steps[#steps + 1] = function()
+			local n = 0
+			for name, v in pairs(snap.cvars) do
+				local cur = Get(name)
+				if cur ~= nil and tostring(cur) ~= v then pcall(SetCVar, name, v); n = n + 1 end
+			end
+			Report(("Game settings: %d changed."):format(n))
+		end
+	end
+	if o.profiles then steps[#steps + 1] = function() ApplyProfiles(snap, isRestore) end end
 	runner:Show()
+end
+
+local function Apply(key)
+	local snap = GetSnap(key)
+	if not snap then Say("No saved setup called '" .. tostring(key) .. "'.") return end
+	ApplySnap(snap, snap.name or key, db.opts)
+end
+
+local function RestoreBackup(index)
+	local b = db.backups[index or 1]
+	if not b then Say("No backup yet.") return end
+	ApplySnap(b, "backup of " .. b.date, RESTORE_OPTS, true)
 end
 
 -- ---------------------------------------------------------------------------------------------------------
@@ -425,6 +553,15 @@ end
 local function SnapshotValues()
 	local v = {}
 	for name, snap in pairs(db.snapshots) do v[name] = ("%s  (%s)"):format(name, snap.char) end
+	for name, list in pairs(db.history) do
+		for i, snap in ipairs(list) do v[name .. "#" .. i] = ("%s  older version, %s"):format(name, snap.date) end
+	end
+	return v
+end
+
+local function BackupValues()
+	local v = {}
+	for i, b in ipairs(db.backups) do v[i] = ("%s  %s"):format(b.date, b.char) end
 	return v
 end
 
@@ -436,8 +573,10 @@ local function Options()
 	-- tab 1: save
 	local save = { type = "group", name = "Save a setup", order = 1, args = {} }
 	save.args.info = { type = "description", order = 1, fontSize = "medium",
-		name = "Set up one character the way you like (action bars, keybinds, macros, BindPad, addon profiles), then save it here. "
-			.. "The setup is kept for the whole account, so you can apply it to your other characters.\n\nThis character: " .. PlayerKey() }
+		name = "Set up one character the way you like (action bars, keybinds, macros, BindPad, addon profiles, game settings), then save it here. "
+			.. "The setup is kept for the whole account, so you can apply it to your other characters.\n\n"
+			.. "Every save also makes a frozen copy of each addon profile, called <name>_sync_<date>_<time>, so later changes to this character do not change the setup. "
+			.. "The previous version of a setup is kept (the last " .. KEEP_VERSIONS .. ").\n\nThis character: " .. PlayerKey() }
 	save.args.name = { type = "input", order = 2, name = "Name of the setup", width = "double",
 		get = function() return db.newName or select(2, UnitClass("player")) or "Setup" end,
 		set = function(_, v) db.newName = strtrim(v or "") end }
@@ -457,15 +596,23 @@ local function Options()
 		save.args["s" .. name] = { type = "description", order = 10 + n * 2, fontSize = "medium",
 			name = ("|cffffd100%s|r  from %s on %s\n%s"):format(name, snap.char, snap.date, Summary(snap)) }
 		save.args["d" .. name] = { type = "execute", order = 11 + n * 2, name = "Delete " .. name, width = "half",
-			confirm = true, confirmText = "Delete the setup '" .. name .. "'?",
-			func = function() db.snapshots[name] = nil; if db.selected == name then db.selected = nil end end }
+			confirm = true, confirmText = "Delete the setup '" .. name .. "' with its older versions and frozen addon profiles?",
+			func = function()
+				local old = db.snapshots[name]
+				db.snapshots[name] = nil
+				local hist = db.history[name]
+				db.history[name] = nil
+				if db.selected and (db.selected == name or db.selected:sub(1, #name + 1) == name .. "#") then db.selected = nil end
+				if old then DropSyncProfiles(old) end
+				for _, h in ipairs(hist or {}) do DropSyncProfiles(h) end
+			end }
 	end
 	if n == 0 then save.args.none = { type = "description", order = 11, name = "Nothing saved yet." } end
 	root.args.save = save
 
 	-- tab 2: apply
 	local ap = { type = "group", name = "Apply to this character", order = 2, args = {} }
-	local snap = db.selected and db.snapshots[db.selected]
+	local snap = GetSnap(db.selected)
 	ap.args.info = { type = "description", order = 1, fontSize = "medium",
 		name = "This character: " .. PlayerKey() .. "\nChoose a saved setup and what to copy, then press Apply. Your current choices are replaced." }
 	ap.args.select = { type = "select", order = 2, name = "Setup", width = "double", values = SnapshotValues,
@@ -483,7 +630,8 @@ local function Options()
 	toggle("deleteOtherMacros", "   Delete the character macros that are not in the setup", nil, 32, function() return not opts.macros end)
 	toggle("bindpad", "BindPad profile of the character", "Copies the BindPad slots (and which profile each talent group uses). Needs /reload.", 40,
 		function() return not BindPadVars end)
-	toggle("profiles", "Addon profiles (Bartender4, BigDebuffs, DBM ...)", "Switches the addons to the profile used by the master character. The profile must exist; nothing is copied, so a change in one place shows on all characters.", 50)
+	toggle("cvars", "Game settings (interface options)", "The console variables of the Interface options and of the hidden ones: nameplates, camera, chat, combat, tooltips, sound switches ... The graphics, sound devices and voice chat settings are not copied.", 45)
+	toggle("profiles", "Addon profiles (Bartender4, BigDebuffs, DBM ...)", "Switches the addons to the frozen profile that was saved with the setup. Nothing is copied again: characters that use it share it, so a change made on one shows on all of them.", 50)
 	if snap and opts.profiles then
 		local list = {}
 		for svn in pairs(snap.profiles) do list[#list + 1] = svn end
@@ -498,19 +646,17 @@ local function Options()
 		ap.args.profileList = grp
 	end
 	ap.args.summary = { type = "description", order = 70, fontSize = "medium",
-		name = snap and ("Setup '" .. db.selected .. "': " .. Summary(snap) .. (snap.class ~= select(2, UnitClass("player")) and ("\n|cffff5555This setup is from a " .. tostring(snap.class) .. ": the action bars will be skipped.|r") or "")) or "Save a setup first." }
-	ap.args.apply = { type = "execute", order = 71, name = "Apply to this character", disabled = function() return not db.selected or not db.snapshots[db.selected] end,
+		name = snap and ("Setup '" .. (snap.name or db.selected) .. "': " .. Summary(snap) .. (snap.class ~= select(2, UnitClass("player")) and ("\n|cffff5555This setup is from a " .. tostring(snap.class) .. ": the action bars will be skipped.|r") or "")) or "Save a setup first." }
+	ap.args.apply = { type = "execute", order = 71, name = "Apply to this character", disabled = function() return not GetSnap(db.selected) end,
 		confirm = true, confirmText = "Replace the chosen things of this character with the setup?",
 		func = function() Apply(db.selected) end }
-	ap.args.undo = { type = "execute", order = 71.5, name = "Restore the macros from before the last apply",
-		desc = function() return db.macroBackup and ("Put the macros back as they were on " .. db.macroBackup.date .. " (" .. db.macroBackup.char .. "). Macros created by the apply are kept.") or "Nothing to restore yet." end,
-		disabled = function() return not db.macroBackup end,
-		confirm = true, confirmText = "Restore the macros from the backup?",
-		func = function()
-			wipe(report)
-			ApplyMacros({ macros = db.macroBackup.macros }, { generalMacros = true })
-			for _, line in ipairs(report) do Say(line) end
-		end }
+	ap.args.undoHeader = { type = "header", order = 73, name = "Undo" }
+	ap.args.undoInfo = { type = "description", order = 74, name = "Before every apply, everything of this character (bars, keybinds, macros, BindPad, addon profile names, game settings) is saved. The last " .. KEEP_BACKUPS .. " backups are kept." }
+	ap.args.undoSel = { type = "select", order = 75, name = "Backup", width = "double", values = BackupValues,
+		get = function() return db.undoSel or (db.backups[1] and 1) end, set = function(_, v) db.undoSel = v end }
+	ap.args.undo = { type = "execute", order = 76, name = "Restore this backup", disabled = function() return #db.backups == 0 end,
+		confirm = true, confirmText = "Put back everything of the backup (macros created since then are deleted)?",
+		func = function() RestoreBackup(db.undoSel or 1) end }
 	ap.args.reload = { type = "execute", order = 72, name = "Reload the interface", func = function() ReloadUI() end }
 	if db.lastResult then
 		ap.args.resultHeader = { type = "header", order = 80, name = "Last result" }
@@ -530,6 +676,9 @@ f:SetScript("OnEvent", function(self, event, arg1)
 	SkomsProfileSyncDB = SkomsProfileSyncDB or {}
 	db = SkomsProfileSyncDB
 	db.snapshots = db.snapshots or {}
+	db.history = db.history or {}
+	db.backups = db.backups or {}
+	db.macroBackup = nil
 	db.profileOff = db.profileOff or {}
 	db.opts = db.opts or {}
 	for k, v in pairs(DEFAULT_OPTS) do if db.opts[k] == nil then db.opts[k] = v end end
@@ -549,6 +698,8 @@ SlashCmdList["SKOMSPROFILESYNC"] = function(msg)
 		Say(("'%s' saved: %s."):format(name, Summary(Save(name))))
 	elseif cmd == "apply" then
 		Apply(rest ~= "" and rest or db.selected)
+	elseif cmd == "restore" then
+		RestoreBackup(tonumber(rest) or 1)
 	elseif cmd == "list" then
 		local n = 0
 		for name, snap in pairs(db.snapshots) do n = n + 1; Say(("%s  from %s: %s"):format(name, snap.char, Summary(snap))) end

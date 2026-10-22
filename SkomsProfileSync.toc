@@ -1,6 +1,6 @@
 ## Interface: 30300
 ## Title: SkomsProfileSync
-## Notes: Set up one character, then copy its action bars, keybinds, macros, BindPad profile and addon profiles to your other characters. Type /sps.
+## Notes: Set up one character, then copy its action bars, keybinds, macros, BindPad profile, addon profiles and game settings to your other characters. Frozen copies and backups are kept. Type /sps.
 ## Version: 1.0.0
 ## Author: Skom
 ## SavedVariables: SkomsProfileSyncDB
@@ -8,4 +8,5 @@
 ## X-Inspired-By: ActionBarSaver by Shadowed
 
 libs\embeds.xml
+cvars.lua
 SkomsProfileSync.lua
