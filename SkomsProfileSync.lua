@@ -68,8 +68,9 @@ local function ReadBars()
 		if HasAction(slot) then
 			local kind, id, sub = GetActionInfo(slot)
 			if kind == "spell" and id then
-				local name = GetSpellInfo(id)
-				if name then bars[slot] = { t = "spell", name = name, id = id } end
+				-- in this client the id of a spell action is the place of the spell in the spellbook, not its spell id
+				local name = GetSpellName(id, BOOKTYPE_SPELL) or GetSpellInfo(id)
+				if name then bars[slot] = { t = "spell", name = name } end
 			elseif kind == "macro" and id then
 				local name = GetMacroInfo(id)
 				if name then
@@ -137,12 +138,31 @@ local function ReadCVars()
 	return t
 end
 
+local MOD_CLICKS = { "AUTOLOOTTOGGLE", "SELFCAST", "FOCUSCAST", "PICKUPACTION", "CHATLINK", "COMPAREITEMS", "DRESSUP",
+	"SPLITSTACK", "STICKYCAMERA", "SOCKETITEM", "QUESTWATCHTOGGLE", "TOKENWATCHTOGGLE" }
+
+-- the Interface options that are not console variables: show helm / cloak, the extra action bars, the modifier keys
+local function ReadMisc()
+	local m = { clicks = {} }
+	if ShowingHelm then m.helm = ShowingHelm() and 1 or 0 end
+	if ShowingCloak then m.cloak = ShowingCloak() and 1 or 0 end
+	if GetActionBarToggles then
+		local b1, b2, b3, b4 = GetActionBarToggles()
+		m.bars = { b1 and 1 or 0, b2 and 1 or 0, b3 and 1 or 0, b4 and 1 or 0 }
+	end
+	for _, action in ipairs(MOD_CLICKS) do
+		local ok, key = pcall(GetModifiedClick, action)
+		if ok and key then m.clicks[action] = key end
+	end
+	return m
+end
+
 local function ReadAll()
 	local _, class = UnitClass("player")
 	return {
 		class = class, char = PlayerKey(), date = date("%Y-%m-%d %H:%M"),
 		bindings = ReadBindings(), macros = ReadMacros(), bars = ReadBars(),
-		profiles = ReadProfiles(), bindpad = ReadBindPad(), cvars = ReadCVars(),
+		profiles = ReadProfiles(), bindpad = ReadBindPad(), cvars = ReadCVars(), misc = ReadMisc(),
 	}
 end
 
@@ -470,7 +490,7 @@ end
 local function SlotAlready(slot, e)
 	if not HasAction(slot) then return false end
 	local kind, id = GetActionInfo(slot)
-	if e.t == "spell" and kind == "spell" then return GetSpellInfo(id) == e.name end
+	if e.t == "spell" and kind == "spell" then return (GetSpellName(id, BOOKTYPE_SPELL) or GetSpellInfo(id)) == e.name end
 	if e.t == "macro" and kind == "macro" then return id == FindMacro(e.name, e.perChar, e.nth) end
 	if e.t == "item" and kind == "item" then return id == e.id end
 	return false
@@ -595,7 +615,30 @@ local function ApplySnap(snap, label, o, isRestore)
 				local cur = Get(name)
 				if cur ~= nil and tostring(cur) ~= v then pcall(SetCVar, name, v); n = n + 1 end
 			end
-			Report(("Game settings: %d changed."):format(n))
+			local extra = {}
+			local m = snap.misc
+			if m then
+				if m.helm ~= nil and pcall(ShowHelm, m.helm) then extra[#extra + 1] = "helm" end
+				if m.cloak ~= nil and pcall(ShowCloak, m.cloak) then extra[#extra + 1] = "cloak" end
+				if m.bars and SetActionBarToggles then
+					local always = snap.cvars and snap.cvars.alwaysShowActionBars == "1" and 1 or nil
+					if pcall(SetActionBarToggles, m.bars[1] == 1 and 1 or nil, m.bars[2] == 1 and 1 or nil, m.bars[3] == 1 and 1 or nil,
+						m.bars[4] == 1 and 1 or nil, always) then
+						extra[#extra + 1] = "extra bars"
+						if MultiActionBar_Update then pcall(MultiActionBar_Update) end
+						if UIParent_ManageFramePositions then pcall(UIParent_ManageFramePositions) end
+					end
+				end
+				local clicks = 0
+				for action, key in pairs(m.clicks or {}) do
+					if pcall(SetModifiedClick, action, key) then clicks = clicks + 1 end
+				end
+				if clicks > 0 then
+					pcall(SaveBindings, GetCurrentBindingSet())
+					extra[#extra + 1] = clicks .. " modifier keys"
+				end
+			end
+			Report(("Game settings: %d changed%s."):format(n, #extra > 0 and (", plus " .. table.concat(extra, ", ")) or ""))
 		end
 	end
 	if o.profiles then steps[#steps + 1] = function() ApplyProfiles(snap, isRestore) end end
