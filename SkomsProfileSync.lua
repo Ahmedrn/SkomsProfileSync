@@ -117,10 +117,64 @@ local function BindPadKey()
 	return (GetRealmName() or "") .. "_" .. (UnitName("player") or "")
 end
 
+-- every action (CLICK BindPadKey:MACRO name, SPELL ..., ITEM ...) found in the BindPad data
+local function BindPadActions(t, out, depth)
+	if type(t) ~= "table" or depth > 6 then return end
+	for k, v in pairs(t) do
+		if k == "action" and type(v) == "string" then
+			out[v] = true
+		elseif type(v) == "table" then
+			BindPadActions(v, out, depth + 1)
+		end
+	end
+end
+
 local function ReadBindPad()
 	if not BindPadVars then return nil end
 	local data = BindPadVars[BindPadKey()]
-	if type(data) == "table" then return Copy(data) end
+	if type(data) ~= "table" then return nil end
+	local copy = Copy(data)
+	-- BindPad rebinds the keys it has in its own profile record when it loads, and unbinds the others: bring the record up to date
+	local num = BindPadCore and BindPadCore.GetCurrentProfileNum and BindPadCore.GetCurrentProfileNum()
+	local profile = num and copy[num]
+	if type(profile) == "table" then
+		profile.keys = profile.keys or {}
+		local actions = {}
+		BindPadActions(profile, actions, 0)
+		for action in pairs(actions) do
+			local key = GetBindingKey(action)
+			if key then profile.keys[action] = key end
+		end
+	end
+	return copy
+end
+
+-- bindings the game does not list: the ones made with SetBinding to a macro, a spell or a button of another addon (BindPad ...)
+local function AddExtraBindings(list, macros)
+	local known = {}
+	for _, b in ipairs(list) do known[b.cmd] = true end
+	local function add(cmd)
+		if known[cmd] then return end
+		known[cmd] = true
+		local keys = { GetBindingKey(cmd) }
+		if #keys > 0 then list[#list + 1] = { cmd = cmd, keys = keys } end
+	end
+	for _, m in ipairs(macros) do add("MACRO " .. m.name) end
+	if GetNumSpellTabs then
+		for tab = 1, GetNumSpellTabs() do
+			local _, _, offset, count = GetSpellTabInfo(tab)
+			for i = offset + 1, offset + count do
+				local name = GetSpellName(i, BOOKTYPE_SPELL)
+				if name then add("SPELL " .. name) end
+			end
+		end
+	end
+	if BindPadVars then
+		local actions = {}
+		BindPadActions(BindPadVars, actions, 0)
+		for action in pairs(actions) do add(action) end
+	end
+	return list
 end
 
 -- a game setting by name; this client raises an error for a name that is not a console variable
@@ -159,9 +213,10 @@ end
 
 local function ReadAll()
 	local _, class = UnitClass("player")
+	local macros = ReadMacros()
 	return {
 		class = class, char = PlayerKey(), date = date("%Y-%m-%d %H:%M"),
-		bindings = ReadBindings(), macros = ReadMacros(), bars = ReadBars(),
+		bindings = AddExtraBindings(ReadBindings(), macros), macros = macros, bars = ReadBars(),
 		profiles = ReadProfiles(), bindpad = ReadBindPad(), cvars = ReadCVars(), misc = ReadMisc(),
 	}
 end
@@ -686,7 +741,7 @@ local function Options()
 	local root = { type = "group", name = "SkomsProfileSync", childGroups = "tab", args = {} }
 
 	-- tab 1: save
-	local save = { type = "group", name = "Save a setup", order = 1, args = {} }
+	local save = { type = "group", name = "Save a setup", order = 2, args = {} }
 	save.args.info = { type = "description", order = 1, fontSize = "medium",
 		name = "Set up one character the way you like (action bars, keybinds, macros, BindPad, addon profiles, game settings), then save it here. "
 			.. "The setup is kept for the whole account, so you can apply it to your other characters.\n\n"
@@ -726,7 +781,7 @@ local function Options()
 	root.args.save = save
 
 	-- tab 2: apply
-	local ap = { type = "group", name = "Apply to this character", order = 2, args = {} }
+	local ap = { type = "group", name = "Apply to this character", order = 1, args = {} }
 	local snap = GetSnap(db.selected)
 	ap.args.info = { type = "description", order = 1, fontSize = "medium",
 		name = "This character: " .. PlayerKey() .. "\nChoose a saved setup and what to copy, then press Apply. Your current choices are replaced." }
@@ -737,7 +792,8 @@ local function Options()
 		ap.args[key] = { type = "toggle", order = order, width = "full", name = label, desc = desc,
 			get = function() return opts[key] end, set = function(_, v) opts[key] = v end, disabled = disabled }
 	end
-	toggle("forceOtherClass", "Copy bars, macros and BindPad even if the setup is from another class", "Off (default): when the class of the setup is not the class of this character, the action bars, the macros and the BindPad profile are skipped; keybinds, addon profiles and game settings are still copied.", 5)
+	ap.args.copyHeader = { type = "header", order = 8, name = "What to copy" }
+	toggle("forceOtherClass", "Copy bars, macros and BindPad even if the setup is from another class", "Off (default): when the class of the setup is not the class of this character, the action bars, the macros and the BindPad profile are skipped; keybinds, addon profiles and game settings are still copied.", 9)
 	toggle("bars", "Action bars", "Every slot of the bars (also the stance / bonus bars) gets the same spell, macro or item. Spells use your highest rank.", 10)
 	toggle("clearEmptySlots", "   Also empty the slots that are empty in the setup", "Off: slots that are empty in the setup keep what they have.", 11, function() return not opts.bars end)
 	toggle("keybinds", "Keybinds", "Every key binding of the game, including the ones that point to macros, spells and bar buttons.", 20)
@@ -762,9 +818,9 @@ local function Options()
 		end
 		ap.args.profileList = grp
 	end
-	ap.args.summary = { type = "description", order = 70, fontSize = "medium",
+	ap.args.summary = { type = "description", order = 3, fontSize = "medium",
 		name = snap and ("Setup '" .. (snap.name or db.selected) .. "': " .. Summary(snap) .. (snap.class ~= select(2, UnitClass("player")) and ("\n|cffff5555This setup is from a " .. tostring(snap.class) .. (opts.forceOtherClass and ": copied anyway, as you chose.|r" or ": the action bars, macros and BindPad will be skipped.|r")) or "")) or "Save a setup first." }
-	ap.args.apply = { type = "execute", order = 71, name = "Apply to this character", disabled = function() return not GetSnap(db.selected) end,
+	ap.args.apply = { type = "execute", order = 4, width = "double", name = function() return "Apply to " .. PlayerKey() end, disabled = function() return not GetSnap(db.selected) end,
 		confirm = true, confirmText = "Replace the chosen things of this character with the setup?",
 		func = function() Apply(db.selected) end }
 	ap.args.undoHeader = { type = "header", order = 73, name = "Undo" }
@@ -779,10 +835,10 @@ local function Options()
 	ap.args.undo = { type = "execute", order = 76, name = "Restore this backup", disabled = function() return #db.backups == 0 end,
 		confirm = true, confirmText = "Put back everything of the backup (macros created since then are deleted)?",
 		func = function() RestoreBackup(math.min(db.undoSel or 1, #db.backups)) end }
-	ap.args.reload = { type = "execute", order = 72, name = "Reload the interface", func = function() ReloadUI() end }
+	ap.args.reload = { type = "execute", order = 5, name = "Reload the interface", func = function() ReloadUI() end }
 	if db.lastResult then
-		ap.args.resultHeader = { type = "header", order = 80, name = "Last result" }
-		ap.args.result = { type = "description", order = 81, name = db.lastResult }
+		ap.args.resultHeader = { type = "header", order = 6, name = "Last result" }
+		ap.args.result = { type = "description", order = 7, name = db.lastResult }
 	end
 	root.args.apply = ap
 

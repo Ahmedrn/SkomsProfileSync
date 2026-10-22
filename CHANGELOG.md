@@ -10,5 +10,6 @@ First release.
 - Action bars, macros and the BindPad profile are skipped when the setup is from another class (an option forces them).
 - A Storage tab shows what is stored, sets how many versions and backups are kept, and deletes the unused frozen profiles. A save that changes nothing in an addon reuses its previous frozen profile.
 - Before every apply, the whole state of the character is saved (the last 8 backups); one button or `/sps restore` puts it back.
+- The Apply tab opens first, with the Apply button right under the setup choice and the result below it; the list of what to copy comes after.
 - Choose what to copy, with options to keep your other keybinds, empty the slots that are empty in the setup, copy the general macros and delete the other character macros.
 - `/sps` opens the window; `/sps save`, `/sps apply`, `/sps list`.
