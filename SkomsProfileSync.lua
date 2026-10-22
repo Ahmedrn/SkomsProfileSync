@@ -624,14 +624,16 @@ local function SnapshotValues()
 	local v = {}
 	for name, snap in pairs(db.snapshots) do v[name] = ("%s  (%s)"):format(name, snap.char) end
 	for name, list in pairs(db.history) do
-		for i, snap in ipairs(list) do v[name .. "#" .. i] = ("%s  older version, %s"):format(name, snap.date) end
+		for i, snap in ipairs(list) do v[name .. "#" .. i] = ("%s  older version, %s"):format(name, snap.date or "?") end
 	end
+	if next(v) == nil then v["_none"] = "Nothing saved yet" end
 	return v
 end
 
 local function BackupValues()
 	local v = {}
-	for i, b in ipairs(db.backups) do v[i] = ("%s  %s"):format(b.date, b.char) end
+	for i, b in ipairs(db.backups) do v[i] = ("%s  %s"):format(b.date or "?", b.char or "?") end
+	if next(v) == nil then v[0] = "No backup yet" end
 	return v
 end
 
@@ -686,7 +688,8 @@ local function Options()
 	ap.args.info = { type = "description", order = 1, fontSize = "medium",
 		name = "This character: " .. PlayerKey() .. "\nChoose a saved setup and what to copy, then press Apply. Your current choices are replaced." }
 	ap.args.select = { type = "select", order = 2, name = "Setup", width = "double", values = SnapshotValues,
-		get = function() return db.selected end, set = function(_, v) db.selected = v end }
+		get = function() return db.selected end, set = function(_, v) if v ~= "_none" then db.selected = v end end,
+		disabled = function() return next(db.snapshots) == nil end }
 	local function toggle(key, label, desc, order, disabled)
 		ap.args[key] = { type = "toggle", order = order, width = "full", name = label, desc = desc,
 			get = function() return opts[key] end, set = function(_, v) opts[key] = v end, disabled = disabled }
@@ -724,10 +727,15 @@ local function Options()
 	ap.args.undoHeader = { type = "header", order = 73, name = "Undo" }
 	ap.args.undoInfo = { type = "description", order = 74, name = "Before every apply, everything of this character (bars, keybinds, macros, BindPad, addon profile names, game settings) is saved. The last " .. KeepBackups() .. " backups are kept." }
 	ap.args.undoSel = { type = "select", order = 75, name = "Backup", width = "double", values = BackupValues,
-		get = function() return db.undoSel or (db.backups[1] and 1) end, set = function(_, v) db.undoSel = v end }
+		get = function()
+			if #db.backups == 0 then return 0 end
+			return math.min(db.undoSel or 1, #db.backups)
+		end,
+		set = function(_, v) if v > 0 then db.undoSel = v end end,
+		disabled = function() return #db.backups == 0 end }
 	ap.args.undo = { type = "execute", order = 76, name = "Restore this backup", disabled = function() return #db.backups == 0 end,
 		confirm = true, confirmText = "Put back everything of the backup (macros created since then are deleted)?",
-		func = function() RestoreBackup(db.undoSel or 1) end }
+		func = function() RestoreBackup(math.min(db.undoSel or 1, #db.backups)) end }
 	ap.args.reload = { type = "execute", order = 72, name = "Reload the interface", func = function() ReloadUI() end }
 	if db.lastResult then
 		ap.args.resultHeader = { type = "header", order = 80, name = "Last result" }
