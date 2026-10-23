@@ -961,10 +961,13 @@ local function Options()
 	-- tab 1: save
 	local save = { type = "group", name = "Save a setup", order = 2, args = {} }
 	save.args.info = { type = "description", order = 1, fontSize = "medium",
-		name = "Set up one character the way you like (action bars, keybinds, macros, BindPad, addon profiles, game settings), then save it here. "
-			.. "The setup is kept for the whole account, so you can apply it to your other characters.\n\n"
-			.. "Every save also makes a frozen copy of each addon profile, called Sync_<name> (Sync_<name> v2, v3 ... for the later versions), so later changes to this character do not change the setup. "
-			.. "The previous version of a setup is kept (the last " .. KeepVersions() .. ").\n\nThis character: " .. PlayerKey() }
+		name = function()
+			return "Set up one character the way you like, then save it here as a named setup. It is kept for the whole account: apply it to your other characters from the Apply tab, where you choose what to copy.\n\n"
+				.. "A setup holds the action bars, keybinds, macros, the BindPad profile, the profiles of your other addons and the game settings.\n\n"
+				.. "Saving under a name that already exists makes a new version and keeps the previous ones (the last " .. KeepVersions() .. "). "
+				.. "Each save also freezes a copy of every addon profile, called Sync_<name> (Sync_<name> v2 for the next save), so later changes to this character do not change the setup. The Storage tab deletes the ones nobody uses.\n\n"
+				.. "Action bars, macros and BindPad are only copied to characters of the same class.\n\nThis character: " .. PlayerKey()
+		end }
 	save.args.name = { type = "input", order = 2, name = "Name of the setup", width = "double",
 		get = function() return db.newName or select(2, UnitClass("player")) or "Setup" end,
 		set = function(_, v) db.newName = strtrim(v or "") end }
