@@ -258,6 +258,16 @@ local function EachDB(fn)
 	end
 end
 
+-- frozen profiles are called Sync_<setup>, and Sync_<setup> v2, v3 ... for the later versions of the setup (older
+-- ones, from before, were <setup>_sync_<date>_<time>)
+local function IsFrozen(name)
+	return type(name) == "string" and (name:find("^Sync_") ~= nil or name:find("_sync_", 1, true) ~= nil)
+end
+
+local function FrozenName(setup, rev)
+	return rev <= 1 and ("Sync_" .. setup) or ("Sync_" .. setup .. " v" .. rev)
+end
+
 -- a frozen copy of a profile (and of its part in every namespace): the saved setup keeps its own, later changes of the character do not touch it
 local function CopyProfileData(dbo, from, to)
 	local sv = dbo.sv
@@ -288,7 +298,7 @@ end
 local function DropSyncProfiles(snap)
 	EachDB(function(dbo, svn)
 		local pname = snap.profiles and snap.profiles[svn]
-		if pname and pname:find("_sync_", 1, true) and not ProfileInUse(svn, pname, dbo) then
+		if pname and IsFrozen(pname) and not ProfileInUse(svn, pname, dbo) then
 			if dbo.sv.profiles then dbo.sv.profiles[pname] = nil end
 			for _, nsv in pairs(dbo.sv.namespaces or {}) do
 				if type(nsv) == "table" and nsv.profiles then nsv.profiles[pname] = nil end
@@ -300,20 +310,26 @@ end
 local function Save(name)
 	local snap = ReadAll()
 	snap.name = name
-	local stamp = date("%Y%m%d_%H%M")
 	local frozen = 0
 	local old = db.snapshots[name]
+	local rev = (old and old.rev or 0) + 1
+	snap.rev = rev
 	EachDB(function(dbo, svn)
 		local cur = snap.profiles[svn]
 		if cur then
 			local prev = old and old.profiles and old.profiles[svn]
 			local sv = dbo.sv
-			local same = prev and prev:find("_sync_", 1, true) and sv.profiles and sv.profiles[prev]
+			local same = prev and IsFrozen(prev) and sv.profiles and sv.profiles[prev]
 				and DeepEqual(sv.profiles[cur] or {}, sv.profiles[prev])
 			if same then
 				snap.profiles[svn] = prev      -- nothing changed since the last save: the same frozen profile
 			else
-				local new = ("%s_sync_%s"):format(name, stamp)
+				local n = rev
+				local new = FrozenName(name, n)
+				while sv.profiles and sv.profiles[new] do
+					n = n + 1
+					new = FrozenName(name, n)
+				end
 				CopyProfileData(dbo, cur, new)
 				snap.profiles[svn] = new
 				frozen = frozen + 1
@@ -345,7 +361,7 @@ local function ScanFrozen(remove)
 	local total, orphans, nodes = 0, 0, 0
 	EachDB(function(dbo, svn)
 		for pname in pairs(dbo.sv.profiles or {}) do
-			if type(pname) == "string" and pname:find("_sync_", 1, true) then
+			if IsFrozen(pname) then
 				total = total + 1
 				nodes = nodes + Nodes(dbo.sv.profiles[pname])
 				for _, nsv in pairs(dbo.sv.namespaces or {}) do
@@ -388,7 +404,7 @@ local function FindUnused(scope)
 		end
 		for pname in pairs(names) do
 			if type(pname) == "string" and not IsProtected(pname)
-				and (scope == "all" or pname:find("_sync_", 1, true))
+				and (scope == "all" or IsFrozen(pname))
 				and not ProfileInUse(svn, pname, dbo) then
 				list[#list + 1] = { dbo = dbo, svn = svn, name = pname }
 			end
@@ -402,8 +418,7 @@ local function FindUnused(scope)
 end
 
 -- the deleted profiles go to a bin (the last cleanup only) so that it can be undone
-local function DeleteUnused(scope)
-	local list = FindUnused(scope)
+local function DeleteEntries(list)
 	if #list == 0 then return 0 end
 	local items = {}
 	for _, e in ipairs(list) do
@@ -423,6 +438,96 @@ local function DeleteUnused(scope)
 	end
 	db.trash = { date = date("%Y-%m-%d %H:%M"), items = items }
 	return #list
+end
+
+local function DeleteUnused(scope)
+	return DeleteEntries(FindUnused(scope))
+end
+
+-- by hand: every profile of one addon, with who uses it (the one this character uses is left out)
+local manualSel, manualMap = {}, {}
+
+local function UsageTags(svn, pname, dbo)
+	local tags = {}
+	local chars = {}
+	for key, v in pairs(dbo.sv.profileKeys or {}) do
+		if v == pname then chars[#chars + 1] = tostring(key):match("^(.-) %- ") or tostring(key) end
+	end
+	if #chars > 0 then table.sort(chars) tags[#tags + 1] = table.concat(chars, ", ") end
+	local setups = {}
+	for sname, snap in pairs(db.snapshots) do
+		if snap.profiles and snap.profiles[svn] == pname then setups[#setups + 1] = sname end
+	end
+	if #setups > 0 then table.sort(setups) tags[#tags + 1] = "setup " .. table.concat(setups, ", ") end
+	local old = false
+	for _, list in pairs(db.history) do
+		for _, snap in ipairs(list) do if snap.profiles and snap.profiles[svn] == pname then old = true end end
+	end
+	for _, snap in ipairs(db.backups) do if snap.profiles and snap.profiles[svn] == pname then old = true end end
+	if old then tags[#tags + 1] = "older version or backup" end
+	return tags
+end
+
+local function AddonProfileNames(dbo)
+	local names = {}
+	for pname in pairs(dbo.sv.profiles or {}) do names[pname] = true end
+	for _, nsv in pairs(dbo.sv.namespaces or {}) do
+		if type(nsv) == "table" and nsv.profiles then
+			for pname in pairs(nsv.profiles) do names[pname] = true end
+		end
+	end
+	return names
+end
+
+local function ManualAddons()
+	local t, any = {}, false
+	EachDB(function(dbo, svn)
+		for pname in pairs(AddonProfileNames(dbo)) do
+			if type(pname) == "string" and dbo:GetCurrentProfile() ~= pname then t[svn] = svn any = true break end
+		end
+	end)
+	if not any then t.none = "(no profile to delete)" end
+	return t
+end
+
+local function ManualAddon()
+	local list = ManualAddons()
+	if db.manualAddon and list[db.manualAddon] then return db.manualAddon end
+	local first
+	for k in pairs(list) do if not first or k < first then first = k end end
+	return first
+end
+
+local function ManualValues()
+	wipe(manualMap)
+	local values = {}
+	local want = ManualAddon()
+	EachDB(function(dbo, svn)
+		if svn ~= want then return end
+		local names = {}
+		for pname in pairs(AddonProfileNames(dbo)) do
+			if type(pname) == "string" and dbo:GetCurrentProfile() ~= pname then names[#names + 1] = pname end
+		end
+		table.sort(names)
+		for _, pname in ipairs(names) do
+			local key = svn .. "\1" .. pname
+			local tags = UsageTags(svn, pname, dbo)
+			local note = #tags == 0 and "|cff55ff55unused|r" or ("|cff999999used by " .. table.concat(tags, "; ") .. "|r")
+			values[key] = pname .. "   " .. note
+			manualMap[key] = { dbo = dbo, svn = svn, name = pname, unused = #tags == 0 }
+		end
+	end)
+	if next(values) == nil then values.none = "(no profile)" end
+	return values
+end
+
+local function ManualSelected()
+	ManualValues()
+	local list = {}
+	for key, on in pairs(manualSel) do
+		if on and manualMap[key] then list[#list + 1] = manualMap[key] end
+	end
+	return list
 end
 
 local function RestoreDeleted()
@@ -857,7 +962,7 @@ local function Options()
 	save.args.info = { type = "description", order = 1, fontSize = "medium",
 		name = "Set up one character the way you like (action bars, keybinds, macros, BindPad, addon profiles, game settings), then save it here. "
 			.. "The setup is kept for the whole account, so you can apply it to your other characters.\n\n"
-			.. "Every save also makes a frozen copy of each addon profile, called <name>_sync_<date>_<time>, so later changes to this character do not change the setup. "
+			.. "Every save also makes a frozen copy of each addon profile, called Sync_<name> (Sync_<name> v2, v3 ... for the later versions), so later changes to this character do not change the setup. "
 			.. "The previous version of a setup is kept (the last " .. KeepVersions() .. ").\n\nThis character: " .. PlayerKey() }
 	save.args.name = { type = "input", order = 2, name = "Name of the setup", width = "double",
 		get = function() return db.newName or select(2, UnitClass("player")) or "Setup" end,
@@ -976,12 +1081,16 @@ local function Options()
 		name = "Addon profiles pile up: every character and every save can leave one behind. A profile is unused when no character, no saved setup, no older version and no backup uses it. "
 			.. "The profile \"Default\" and the names in the protected list below are never deleted." }
 	st.args.scope = { type = "select", order = 8, name = "Which profiles", width = "double",
-		values = { sync = "Only the frozen copies of this addon (..._sync_...)", all = "Every unused profile of every addon" },
+		values = { sync = "Only the frozen copies of this addon (Sync_...)", all = "Every unused profile of every addon" },
 		get = function() return db.cleanScope or "sync" end, set = function(_, v) db.cleanScope = v end }
 	st.args.list = { type = "description", order = 9,
 		name = function()
 			local list = FindUnused(db.cleanScope or "sync")
-			if #list == 0 then return "Nothing to delete." end
+			if #list == 0 then
+				local total, orphans = ScanFrozen(false)
+				local kept = total - orphans
+				return "Nothing to delete." .. (kept > 0 and (" " .. kept .. " frozen profile(s) are kept because a saved setup, an older version of one or a backup uses them: lower the two numbers above, or delete profiles by hand below.") or "")
+			end
 			local lines, shown, perAddon = {}, 0, {}
 			for _, e in ipairs(list) do
 				perAddon[e.svn] = perAddon[e.svn] or {}
@@ -1021,6 +1130,39 @@ local function Options()
 	st.args.protect = { type = "input", order = 12, multiline = 4, width = "full", name = "Never delete these profiles (one name per line)",
 		desc = "For a profile you keep as a template and no character uses.",
 		get = function() return db.protect or "Default" end, set = function(_, v) db.protect = v or "" end }
+	st.args.manualHeader = { type = "header", order = 20, name = "Delete profiles by hand" }
+	st.args.manualInfo = { type = "description", order = 21, fontSize = "medium",
+		name = "For the addons you do not use any more: pick the addon, tick the profiles you do not need, delete. The profile this character uses is not listed. "
+			.. "A profile that other characters, a saved setup, an older version or a backup use is marked: deleting it makes the other characters start a new one, and a setup skips that addon when applied. "
+			.. "The last deletion can be undone with the Restore button above." }
+	st.args.manualAddon = { type = "select", order = 22, name = "Addon", width = "double", values = ManualAddons,
+		get = function() return ManualAddon() end,
+		set = function(_, v) db.manualAddon = v; wipe(manualSel) end,
+		disabled = function() return ManualAddon() == "none" end }
+	st.args.manualList = { type = "multiselect", order = 23, name = "Profiles", width = "full", values = ManualValues,
+		get = function(_, key) return manualSel[key] end,
+		set = function(_, key, val) manualSel[key] = val or nil end,
+		disabled = function() return ManualAddon() == "none" end }
+	st.args.manualTickUnused = { type = "execute", order = 24, name = "Tick the unused ones",
+		func = function()
+			ManualValues()
+			for key, e in pairs(manualMap) do manualSel[key] = e.unused or nil end
+		end }
+	st.args.manualClear = { type = "execute", order = 25, name = "Untick all", func = function() wipe(manualSel) end }
+	st.args.manualDelete = { type = "execute", order = 26, width = "double",
+		name = function() return ("Delete the %d ticked profile(s)"):format(#ManualSelected()) end,
+		disabled = function() return #ManualSelected() == 0 end,
+		confirm = function()
+			local used = 0
+			for _, e in ipairs(ManualSelected()) do if not e.unused then used = used + 1 end end
+			return ("Delete %d profile(s)%s?"):format(#ManualSelected(), used > 0 and (", " .. used .. " of them used by someone") or "")
+		end,
+		func = function()
+			local n = DeleteEntries(ManualSelected())
+			wipe(manualSel)
+			Say(n .. " profile(s) deleted. Undo: Storage > Restore the deleted profiles.")
+			LibStub("AceConfigRegistry-3.0"):NotifyChange(ADDON)
+		end }
 	st.args.note = { type = "description", order = 5,
 		name = "A save that changes nothing in an addon's profile reuses the previous frozen profile instead of making a new one." }
 	root.args.storage = st
