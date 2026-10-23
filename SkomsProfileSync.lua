@@ -444,6 +444,22 @@ local function DeleteUnused(scope)
 	return DeleteEntries(FindUnused(scope))
 end
 
+-- the realms of this server (character profiles are called <name> - <realm>): the ones of other servers can be ticked
+local DEFAULT_REALMS = "Icecrown\nLordaeron\nFrostwolf\nBlackrock\nOnyxia\nFrostmourne\nNeltharion"
+
+local function IsOtherServer(profile)
+	local realm = profile:match("^.+ %- (.+)$")
+	if not realm then return false end
+	realm = realm:lower()
+	local mine = (GetRealmName() or ""):lower()
+	if mine ~= "" and realm:find(mine, 1, true) == 1 then return false end
+	for line in (db.realms or DEFAULT_REALMS):gmatch("[^\r\n]+") do
+		local r = strtrim(line):lower()
+		if r ~= "" and realm:find(r, 1, true) == 1 then return false end
+	end
+	return true
+end
+
 -- by hand: every profile of one addon, with who uses it (the one this character uses is left out)
 local manualSel, manualMap = {}, {}
 
@@ -1152,21 +1168,23 @@ local function Options()
 			ManualValues()
 			for key, e in pairs(manualMap) do manualSel[key] = e.unused or nil end
 		end }
-	st.args.manualTickNoChar = { type = "execute", order = 24.2, width = "double", name = "Tick the ones none of my characters use",
-		desc = "Not used by any character of this account. A saved setup, an older version or a backup may still use them (see the note on each line).",
+	st.args.manualTickNoChar = { type = "execute", order = 24.2, width = "double", name = "Tick the ones no character has selected",
+		desc = "Every character picks one profile per addon: these are picked by none of them. A saved setup, an older version or a backup may still use them (see the note on each line).",
 		func = function()
 			ManualValues()
 			for key, e in pairs(manualMap) do if e.noChar then manualSel[key] = true end end
 		end }
-	st.args.manualTickRealm = { type = "execute", order = 24.4, width = "double", name = "Tick the ones named after another realm",
-		desc = "Character profiles are called <name> - <realm>: this ticks the ones of a realm other than this one, when no character uses them.",
+	st.args.manualTickRealm = { type = "execute", order = 24.4, width = "double", name = "Tick the ones of other servers",
+		desc = "Character profiles are called <name> - <realm>. This ticks the ones whose realm is not in the list of this server's realms below (a character of another server, for example), even when that character still uses it.",
 		func = function()
 			ManualValues()
-			local realm = GetRealmName()
 			for key, e in pairs(manualMap) do
-				if e.noChar and e.realm and e.realm ~= realm then manualSel[key] = true end
+				if IsOtherServer(e.name) then manualSel[key] = true end
 			end
 		end }
+	st.args.realms = { type = "input", order = 27, multiline = 4, width = "full", name = "Realms of this server (one per line)",
+		desc = "The button above leaves the profiles of these realms alone.",
+		get = function() return db.realms or DEFAULT_REALMS end, set = function(_, v) db.realms = v or "" end }
 	st.args.manualClear = { type = "execute", order = 25, name = "Untick all", func = function() wipe(manualSel) end }
 	st.args.manualDelete = { type = "execute", order = 26, width = "double",
 		name = function() return ("Delete the %d ticked profile(s)"):format(#ManualSelected()) end,
