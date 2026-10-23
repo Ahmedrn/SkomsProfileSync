@@ -465,7 +465,7 @@ local function UsageTags(svn, pname, dbo)
 	end
 	for _, snap in ipairs(db.backups) do if snap.profiles and snap.profiles[svn] == pname then old = true end end
 	if old then tags[#tags + 1] = "older version or backup" end
-	return tags
+	return tags, #chars
 end
 
 local function AddonProfileNames(dbo)
@@ -511,10 +511,11 @@ local function ManualValues()
 		table.sort(names)
 		for _, pname in ipairs(names) do
 			local key = svn .. "\1" .. pname
-			local tags = UsageTags(svn, pname, dbo)
+			local tags, nChars = UsageTags(svn, pname, dbo)
 			local note = #tags == 0 and "|cff55ff55unused|r" or ("|cff999999used by " .. table.concat(tags, "; ") .. "|r")
 			values[key] = pname .. "   " .. note
-			manualMap[key] = { dbo = dbo, svn = svn, name = pname, unused = #tags == 0 }
+			manualMap[key] = { dbo = dbo, svn = svn, name = pname, unused = #tags == 0, noChar = nChars == 0,
+				realm = pname:match("^.+ %- (.+)$") }
 		end
 	end)
 	if next(values) == nil then values.none = "(no profile)" end
@@ -1147,6 +1148,21 @@ local function Options()
 		func = function()
 			ManualValues()
 			for key, e in pairs(manualMap) do manualSel[key] = e.unused or nil end
+		end }
+	st.args.manualTickNoChar = { type = "execute", order = 24.2, width = "double", name = "Tick the ones none of my characters use",
+		desc = "Not used by any character of this account. A saved setup, an older version or a backup may still use them (see the note on each line).",
+		func = function()
+			ManualValues()
+			for key, e in pairs(manualMap) do if e.noChar then manualSel[key] = true end end
+		end }
+	st.args.manualTickRealm = { type = "execute", order = 24.4, width = "double", name = "Tick the ones named after another realm",
+		desc = "Character profiles are called <name> - <realm>: this ticks the ones of a realm other than this one, when no character uses them.",
+		func = function()
+			ManualValues()
+			local realm = GetRealmName()
+			for key, e in pairs(manualMap) do
+				if e.noChar and e.realm and e.realm ~= realm then manualSel[key] = true end
+			end
 		end }
 	st.args.manualClear = { type = "execute", order = 25, name = "Untick all", func = function() wipe(manualSel) end }
 	st.args.manualDelete = { type = "execute", order = 26, width = "double",
