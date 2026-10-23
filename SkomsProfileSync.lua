@@ -685,6 +685,9 @@ local function ApplyMacros(snap, o)
 	-- the macros are local ones (kept in macros-cache.txt); the second variant is for clients with the other argument order
 	local function Create(m)
 		local perChar = m.perChar and 1 or nil
+		-- full: do not try, the game then files the macro under the other kind (a stray copy in the general macros)
+		local na, nc = GetNumMacros()
+		if (m.perChar and nc >= MAX_CHAR) or (not m.perChar and na >= MAX_ACCOUNT) then return nil end
 		local variants = {
 			function(icon) return CreateMacro(m.name, icon, m.body, 1, perChar) end,
 			function(icon) return CreateMacro(m.name, icon, m.body, nil, perChar) end,
@@ -700,7 +703,9 @@ local function ApplyMacros(snap, o)
 				elseif c2 > c1 and not m.perChar then
 					DeleteMacro(MAX_ACCOUNT + c2)      -- made a character macro by mistake
 				elseif a2 > a1 and m.perChar then
-					DeleteMacro(a2)                    -- made a general macro by mistake
+					for i = a2, 1, -1 do               -- made a general macro by mistake: the new one is the last with this name
+						if GetMacroInfo(i) == m.name then DeleteMacro(i) break end
+					end
 				end
 			end
 		end
@@ -794,6 +799,11 @@ local function ApplySlots(snap, o, book, from, to)
 			if SlotAlready(snap, slot, e) then
 				stats.same = stats.same + 1
 			else
+				-- empty the slot first: placing onto a full slot swaps with it and can leave the wrong thing behind
+					if HasAction(slot) then
+						PickupAction(slot)
+						ClearCursor()
+					end
 				if e.t == "spell" then
 					if book[e.name] then PickupSpell(book[e.name], BOOKTYPE_SPELL) end
 				elseif e.t == "macro" then
