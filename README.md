@@ -1,4 +1,4 @@
-# SkomsProfileSync 1.1.0 (WoW 3.3.5a)
+# SkomsProfileSync 1.1.1 (WoW 3.3.5a)
 
 Set up one character, then copy that setup to your other characters of the same class: action bars, keybinds, macros, BindPad profile, addon profiles and game settings. Type `/sps`.
 

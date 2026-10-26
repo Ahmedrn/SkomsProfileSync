@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.1.1 (2026-10-26)
+
+- The addon list shows a readable name ("Skom's Profile Sync"). The About tab uses those names, and lists Skom's Arena Stats (marked as Warmane only).
+
 ## 1.1.0 (2026-10-23)
 
 - Frozen profiles are now called `Sync_<setup>` (`Sync_<setup> v2` ... for later saves); the old names are still recognised.
