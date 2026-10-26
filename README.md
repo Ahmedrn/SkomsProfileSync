@@ -1,42 +1,33 @@
-# SkomsProfileSync 1.1.0 (WoW 3.3.5a)
+# Skom's Profile Sync (WoW 3.3.5a)
 
-Set up one character, then copy that setup to your other characters of the same class: action bars, keybinds, macros, BindPad profile, addon profiles and game settings. Type `/sps`.
+Set up one character, then copy it to all your alts in one click: action bars, keybinds, macros, BindPad, addon profiles and game settings.
 
-## How it works
-1. On your main character, open `/sps` > **Save a setup**, give the setup a name and press **Save this character as a setup**. It is stored for the whole account. Saving again keeps the previous version (the last 5).
-2. Log in on another character, open `/sps` (the Apply tab opens first), choose the setup, press **Apply** at the top, then `/reload`. What to copy is listed below the button.
+## Features
 
-## What is copied
-- **Action bars:** every slot (also the stance / bonus bars). Spells are matched by name and use the highest rank the character knows; macros by name; items by id. Anything the character does not have yet is skipped and listed. Optional: also empty the slots that are empty in the setup. Skipped when the setup is from another class (unless you force it).
-- **Keybinds:** all key bindings of the game, including the ones that point to macros, spells and bar buttons (Bartender4, BindPad). The bindings the game does not list by itself (the keys of BindPad macros, bindings to a macro or a spell by name) are found and copied too, and the BindPad profile gets its own record of the keys updated, because BindPad unbinds the keys it does not know when it loads. They are always written to the character's own binding set ("character specific key bindings"), never to the account set that other characters may share. Optional: keep the keybinds you already have.
-- **Macros** of the character: created as local macros (kept in the game's `macros-cache.txt`), or updated when a macro with the same name exists. Macros that share a name are told apart by their text, so two macros with one name keep their own places on the bars. Optional: also the general macros, and delete the character macros that are not in the setup. Done before the bars so the bars can use them.
-- **BindPad:** the character's BindPad slots and which profile each talent group uses.
-- **Addon profiles:** every addon that uses AceDB profiles (Bartender4, BigDebuffs, DBM and many more). When you save, each addon profile in use is copied to a frozen profile called `Sync_<name>` (`Sync_<name> v2`, `v3` ... for the later saves of the same setup), so changes you make to your main character afterwards do not change the setup. Applying switches the other characters to that frozen profile (you can untick the addons you do not want). Characters that use it share it, so a change made on one shows on all of them. Deleting a setup removes its frozen profiles when nothing else uses them.
-- **Game settings:** the console variables behind the Interface options and the hidden ones (nameplates, camera, chat, combat, tooltips, floating combat text, sound switches ... about 200 of them), plus the Interface options that are not console variables: **show helm**, **show cloak**, the extra action bars, and the self cast / focus cast / auto loot modifier keys. Graphics, sound devices and voice chat are not copied. See also SkomsAdvancedInterfaceOptions.
+- **Action bars:** every slot, spells at the highest rank the character knows. Anything the alt does not have yet is listed.
+- **Keybinds,** including BindPad, macro and spell bindings, saved per character.
+- **Macros** created or updated, and the **BindPad** profile.
+- **Addon profiles** of every Ace3 addon (Bartender4, DBM, BigDebuffs and more). They are frozen when you save, so your main can keep changing.
+- **Game settings:** about 200 interface options, plus show helm and cloak and the extra action bars.
+- **Choose what to copy,** and keep the alt's own keybinds if you like.
+- **Safe:** every apply is backed up and can be undone, and the last 5 versions of each setup are kept.
+- **Storage cleanup:** see who uses each addon profile and delete the ones nobody needs.
 
-## Different classes
-Action bars, macros and the BindPad profile belong to a class. When the setup is from another class than the character you apply it to, they are skipped, and the Apply tab says so in red. Keybinds, addon profiles and game settings are still copied. Tick **Copy bars, macros and BindPad even if the setup is from another class** to force them.
+Talents, glyphs and per-character addon data are not copied. Bars, macros and BindPad are skipped across classes unless you force them.
 
-## Storage
-A setup takes about 45 KB, and a save adds a frozen copy of the addon profiles in use (about 20 KB in total, in the files of the addons themselves). A save that changes nothing in an addon reuses its previous frozen profile. Old versions and backups are limited (5 versions per setup and 8 backups by default, both adjustable) and the frozen profiles they leave behind are deleted when nothing uses them. The **Storage** tab shows the totals. **Delete profiles by hand** lists every profile of one addon with who uses it (characters, setups, older versions, backups), so you can delete the ones of addons you no longer use. Buttons tick the unused ones, the ones no character has selected, or the ones of other servers (the realm list is editable). **Unused profiles** lists the profiles of the other addons that no character, saved setup, older version or backup uses (only the frozen copies, or every unused profile of every addon), and deletes them. "Default" and the names in the protected list are never deleted, and the last cleanup can be undone with **Restore the deleted profiles**.
+## How to use
 
-## Backups
-Before every apply, everything of the character it is applied to (bars, keybinds, macros, BindPad, the names of the addon profiles, game settings) is saved; the last 8 backups are kept. **Undo > Restore this backup** puts it all back, including deleting the macros the apply created. `/sps restore` restores the latest one.
-
-Not copied: talents and glyphs (the game does not allow it), and anything that is stored only for one character by an addon (SavedVariablesPerCharacter).
+1. On your main: `/sps` > **Save a setup**, give it a name.
+2. On an alt: `/sps` > choose the setup > **Apply**, then `/reload`.
 
 ## Commands
-`/sps` opens the window. `/sps save <name>`, `/sps apply <name>`, `/sps list`, `/sps restore` (latest backup), `/sps bars` (the spells saved on the bars of the selected setup).
 
-## Install
-Put the `SkomsProfileSync` folder in `Interface\AddOns`. It only needs to be on the characters that you use it on (it can stay enabled everywhere).
+- `/sps` opens the window.
+- `/sps save <name>`, `/sps apply <name>`, `/sps list`.
+- `/sps restore` undoes the last apply.
 
-## Help and feedback
-Something that did not copy, or a setup that comes out wrong:
-- **GitHub issues:** https://github.com/Ahmedrn/SkomsProfileSync/issues
-- **A comment on the Warperia page**
+## Feedback
+
+- **GitHub:** https://github.com/Ahmedrn/SkomsProfileSync/issues
+- **Warperia:** comment on the addon page
 - **Discord:** `skomzx`
-
-## Credits
-- **ActionBarSaver** by **Shadowed**: the idea of saving action bars by spell name.
-- **Ace3** for the window.

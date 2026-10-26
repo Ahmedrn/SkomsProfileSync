@@ -1,7 +1,7 @@
 ## Interface: 30300
 ## Title: |cff33ff99Skom's|r Profile Sync
 ## Notes: Set up one character, then copy its action bars, keybinds, macros, BindPad profile, addon profiles and game settings to your other characters. Frozen copies and backups are kept. Type /sps.
-## Version: 1.1.0
+## Version: 1.1.1
 ## Author: Skom
 ## SavedVariables: SkomsProfileSyncDB
 ## OptionalDeps: LibStub, CallbackHandler-1.0, Bartender4, BindPad
