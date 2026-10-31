@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.2.0 (2026-10-31)
+
+- One Skom's minimap button opens all your Skom's addons when two or more are installed (/skoms).
+- New characters are offered your saved setups when they log in, until they have one.
+- Setups include the addon list: the same addons are enabled, and their profiles switched after the reload.
+
 ## 1.1.1 (2026-10-26)
 
 - New display name: Skom's Profile Sync.

@@ -18,6 +18,8 @@ local DEFAULT_OPTS = {
 	profiles = true,
 	cvars = true,
 	forceOtherClass = false,
+	addons = true, disableOtherAddons = false,
+	welcome = true,
 }
 
 local function Copy(v)
@@ -216,13 +218,23 @@ local function ReadMisc()
 	return m
 end
 
+-- the addons enabled on this character (the list of the character select screen)
+local function ReadAddons()
+	local list = {}
+	for i = 1, GetNumAddOns() do
+		local name, _, _, enabled = GetAddOnInfo(i)
+		if name and enabled then list[#list + 1] = name end
+	end
+	return list
+end
+
 local function ReadAll()
 	local _, class = UnitClass("player")
 	local macros = ReadMacros()
 	return {
 		class = class, char = PlayerKey(), date = date("%Y-%m-%d %H:%M"),
 		bindings = AddExtraBindings(ReadBindings(), macros), macros = macros, bars = ReadBars(macros),
-		profiles = ReadProfiles(), bindpad = ReadBindPad(), cvars = ReadCVars(), misc = ReadMisc(),
+		profiles = ReadProfiles(), bindpad = ReadBindPad(), cvars = ReadCVars(), misc = ReadMisc(), addons = ReadAddons(),
 	}
 end
 
@@ -345,6 +357,7 @@ local function Save(name)
 	end
 	db.snapshots[name] = snap
 	db.selected = name
+	db.seen[PlayerKey()] = true   -- the source of a setup is not offered one
 	return snap
 end
 
@@ -594,7 +607,8 @@ local function Summary(snap)
 	local charMacros = 0
 	for _, m in ipairs(snap.macros) do if m.perChar then charMacros = charMacros + 1 end end
 	return ("%d action slots, %d keybinds, %d macros (%d of the character), %d addon profiles, %d game settings%s"):format(
-		CountKeys(snap.bars), #snap.bindings, #snap.macros, charMacros, CountKeys(snap.profiles), CountKeys(snap.cvars), snap.bindpad and ", a BindPad profile" or "")
+		CountKeys(snap.bars), #snap.bindings, #snap.macros, charMacros, CountKeys(snap.profiles), CountKeys(snap.cvars),
+		(snap.bindpad and ", a BindPad profile" or "") .. (snap.addons and (", " .. #snap.addons .. " addons enabled") or ""))
 end
 
 -- ---------------------------------------------------------------------------------------------------------
@@ -605,11 +619,17 @@ local runner = CreateFrame("Frame")
 runner:Hide()
 local function Report(m) report[#report + 1] = m end
 
+local onFinish   -- called once when the running apply is done
 local function Finish()
 	for _, line in ipairs(report) do Say(line) end
 	db.lastResult = table.concat(report, "\n")
 	Say("Done. A /reload is needed for BindPad and some addon profiles.")
 	LibStub("AceConfigRegistry-3.0"):NotifyChange(ADDON)
+	if onFinish then
+		local fn = onFinish
+		onFinish = nil
+		fn()
+	end
 end
 
 runner:SetScript("OnUpdate", function(self)
@@ -855,7 +875,44 @@ local function ApplyProfiles(snap, all)
 end
 
 local RESTORE_OPTS = { bars = true, clearEmptySlots = true, keybinds = true, keepOtherKeybinds = false, macros = true,
-	generalMacros = true, deleteOtherMacros = true, bindpad = true, profiles = true, cvars = true }
+	generalMacros = true, deleteOtherMacros = true, bindpad = true, profiles = true, cvars = true, addons = true, disableOtherAddons = true }
+
+-- enables the addons of the setup (and disables the others when asked); they load at the next reload
+local addonsEnabled = 0
+local function ApplyAddons(snap, o)
+	local want, missing, enabled, disabled = {}, {}, {}, 0
+	for _, name in ipairs(snap.addons) do
+		want[name] = true
+		-- an addon that is not installed has no title (its reason is MISSING)
+		local ok, _, title, _, on, _, reason = pcall(GetAddOnInfo, name)
+		if not ok or not title or reason == "MISSING" then
+			missing[#missing + 1] = name
+		elseif not on then
+			EnableAddOn(name)
+			enabled[#enabled + 1] = name
+		end
+	end
+	if o.disableOtherAddons then
+		for i = 1, GetNumAddOns() do
+			local name, _, _, on = GetAddOnInfo(i)
+			if name and on and not want[name] and name ~= ADDON and not name:find("^Blizzard_") then
+				DisableAddOn(name)
+				disabled = disabled + 1
+			end
+		end
+	end
+	addonsEnabled = #enabled
+	local function List(t)
+		local shown = {}
+		for i = 1, math.min(6, #t) do shown[i] = t[i] end
+		return table.concat(shown, ", ") .. (#t > 6 and ", ..." or "")
+	end
+	Report(("Addons: %d enabled%s%s%s.%s"):format(#enabled, #enabled > 0 and (" (" .. List(enabled) .. ")") or "",
+		disabled > 0 and (", " .. disabled .. " disabled") or "",
+		#missing > 0 and (", " .. #missing .. " not installed here (" .. List(missing) .. ")") or "",
+		(#enabled > 0 or disabled > 0) and " They change at the next reload." or ""))
+	return #enabled > 0
+end
 
 local function ApplySnap(snap, label, o, isRestore)
 	if InCombatLockdown() then Say("Not in combat.") return end
@@ -863,6 +920,7 @@ local function ApplySnap(snap, label, o, isRestore)
 	local _, class = UnitClass("player")
 	local sameClass = (snap.class == class)
 	wipe(steps); wipe(report); wipe(macroMap)
+	db.seen[PlayerKey()] = true   -- this character got a setup: no welcome window any more
 	if not isRestore then PushBackup() end
 	Report(("%s '%s' (from %s) on %s."):format(isRestore and "Restoring" or "Applying", label, snap.char, PlayerKey()))
 
@@ -940,6 +998,16 @@ local function ApplySnap(snap, label, o, isRestore)
 			Report(("Game settings: %d changed%s."):format(n, #extra > 0 and (", plus " .. table.concat(extra, ", ")) or ""))
 		end
 	end
+	addonsEnabled = 0
+	if o.addons then
+		steps[#steps + 1] = function()
+			if not snap.addons then Report("Addons: this setup has no addon list yet (save it again to add one).") return end
+			-- the profiles of the addons enabled now are switched after the reload
+			if ApplyAddons(snap, o) and o.profiles then
+				db.pending[PlayerKey()] = { profiles = Copy(snap.profiles), all = isRestore, label = label }
+			end
+		end
+	end
 	if o.profiles then steps[#steps + 1] = function() ApplyProfiles(snap, isRestore) end end
 	if not isRestore then
 		steps[#steps + 1] = function() Report("To undo everything: /sps restore, or Undo in the options.") end
@@ -982,7 +1050,7 @@ end
 local function Options()
 	local opts = db.opts
 	local newName = db.newName
-	local root = { type = "group", name = "SkomsProfileSync", childGroups = "tab", args = {} }
+	local root = { type = "group", name = "Skom's Profile Sync", childGroups = "tab", args = {} }
 
 	-- tab 1: save
 	local save = { type = "group", name = "Save a setup", order = 2, args = {} }
@@ -1051,6 +1119,8 @@ local function Options()
 	toggle("bindpad", "BindPad profile of the character", "Copies the BindPad slots (and which profile each talent group uses). Needs /reload.", 40,
 		function() return not BindPadVars end)
 	toggle("cvars", "Game settings (interface options)", "The console variables of the Interface options and of the hidden ones: nameplates, camera, chat, combat, tooltips, sound switches ... The graphics, sound devices and voice chat settings are not copied.", 45)
+	toggle("addons", "Addon list (enable the addons of the setup)", "Enables the addons that were enabled on the character of the setup. They load at the next reload, and their profiles are switched right after it.", 52)
+	toggle("disableOtherAddons", "   Also disable the addons that are not in the setup", nil, 53, function() return not opts.addons end)
 	toggle("profiles", "Addon profiles (Bartender4, BigDebuffs, DBM ...)", "Switches the addons to the frozen profile that was saved with the setup. Nothing is copied again: characters that use it share it, so a change made on one shows on all of them.", 50)
 	if snap and opts.profiles then
 		local list = {}
@@ -1070,6 +1140,8 @@ local function Options()
 	ap.args.apply = { type = "execute", order = 4, width = "double", name = function() return "Apply to " .. PlayerKey() end, disabled = function() return not GetSnap(db.selected) end,
 		confirm = true, confirmText = "Replace the chosen things of this character with the setup?",
 		func = function() Apply(db.selected) end }
+	ap.args.welcomeHeader = { type = "header", order = 80, name = "New characters" }
+	toggle("welcome", "Offer a saved setup to characters that have none yet", "At login, a window offers the setups of your other characters. It comes back at every login until this character gets a setup, or until you tick Don't show this again.", 81)
 	ap.args.undoHeader = { type = "header", order = 73, name = "Undo" }
 	ap.args.undoInfo = { type = "description", order = 74, name = "Before every apply, everything of this character (bars, keybinds, macros, BindPad, addon profile names, game settings) is saved. The last " .. KeepBackups() .. " backups are kept." }
 	ap.args.undoSel = { type = "select", order = 75, name = "Backup", width = "double", values = BackupValues,
@@ -1218,11 +1290,187 @@ local function Options()
 end
 
 -- ---------------------------------------------------------------------------------------------------------
+-- first login of a character: offer to import a saved setup
+-- ---------------------------------------------------------------------------------------------------------
+local MAX_WELCOME_ROWS = 8
+
+-- the setups of the other characters: same class first, then the newest
+local function WelcomeSetups()
+	local _, class = UnitClass("player")
+	local list = {}
+	for name, snap in pairs(db.snapshots) do
+		if snap.char ~= PlayerKey() then list[#list + 1] = name end
+	end
+	table.sort(list, function(a, b)
+		local sa, sb = db.snapshots[a], db.snapshots[b]
+		if (sa.class == class) ~= (sb.class == class) then return sa.class == class end
+		return (sa.date or "") > (sb.date or "")
+	end)
+	while #list > MAX_WELCOME_ROWS do table.remove(list) end
+	return list
+end
+
+-- a dialog above everything, cinematics and other addons' windows included; Escape closes it
+local function Dialog(name, height, title)
+	local w = CreateFrame("Frame", name, UIParent)
+	w:SetFrameStrata("FULLSCREEN_DIALOG")
+	w:SetToplevel(true)
+	w:SetClampedToScreen(true)
+	w:SetWidth(440)
+	w:SetHeight(height)
+	w:SetPoint("CENTER", 0, 100)
+	w:SetBackdrop({ bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background", edgeFile = "Interface\\DialogFrame\\UI-DialogBox-Border",
+		tile = true, tileSize = 32, edgeSize = 32, insets = { left = 11, right = 12, top = 12, bottom = 11 } })
+	w:EnableMouse(true)
+	w:SetMovable(true)
+	w:RegisterForDrag("LeftButton")
+	w:SetScript("OnDragStart", w.StartMoving)
+	w:SetScript("OnDragStop", w.StopMovingOrSizing)
+	tinsert(UISpecialFrames, name)
+	local t = w:CreateFontString(nil, "ARTWORK", "GameFontNormalLarge")
+	t:SetPoint("TOP", 0, -22)
+	t:SetText(title)
+	return w
+end
+
+local function DialogButton(w, label, side, onClick)
+	local b = CreateFrame("Button", nil, w, "UIPanelButtonTemplate")
+	b:SetWidth(130); b:SetHeight(24)
+	if side == "LEFT" then b:SetPoint("BOTTOMRIGHT", w, "BOTTOM", -6, 22) else b:SetPoint("BOTTOMLEFT", w, "BOTTOM", 6, 22) end
+	b:SetText(label)
+	b:SetScript("OnClick", onClick)
+	return b
+end
+
+-- after an import from the welcome window: the addon profiles and BindPad need a reload
+local function ShowImported(label)
+	local w = Dialog("SkomsProfileSyncImported", 150, "Import successful")
+	local text = w:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
+	text:SetPoint("TOPLEFT", 26, -50)
+	text:SetWidth(388)
+	text:SetText(("'%s' is now on %s. Reload the interface so %s load it."):format(label, UnitName("player") or "?",
+		addonsEnabled > 0 and ("the " .. addonsEnabled .. " enabled addons, their profiles and BindPad") or "the addon profiles and BindPad"))
+	DialogButton(w, "Reload", "LEFT", function() ReloadUI() end)
+	DialogButton(w, "Later", "RIGHT", function() w:Hide() end)
+	w:Show()
+end
+
+local function ShowWelcome(list)
+	local _, class = UnitClass("player")
+	local selected = list[1]
+	local w = Dialog("SkomsProfileSyncWelcome", 234 + #list * 24, "Skom's Profile Sync")
+	-- shown at every login until a setup is applied here, or until the box is ticked
+	local never = CreateFrame("CheckButton", "SkomsProfileSyncWelcomeNever", w, "UICheckButtonTemplate")
+	never:SetWidth(24); never:SetHeight(24)
+	never:SetPoint("BOTTOMLEFT", 22, 52)
+	_G[never:GetName() .. "Text"]:SetText("Don't show this again on this character")
+	w:SetScript("OnHide", function() if never:GetChecked() then db.seen[PlayerKey()] = true end end)
+
+	local text = w:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
+	text:SetPoint("TOPLEFT", 26, -50)
+	text:SetWidth(388)
+	text:SetJustifyH("LEFT")
+	text:SetText("First time on " .. (UnitName("player") or "?") .. ". Import a saved setup: action bars, keybinds, macros, addon profiles and game settings?")
+
+	local summary = w:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
+	summary:SetWidth(388)
+	summary:SetJustifyH("LEFT")
+	local function Update()
+		local snap = db.snapshots[selected]
+		local note = ""
+		if snap.class ~= class and not db.opts.forceOtherClass then
+			note = "\n|cffff5555From another class: the action bars, macros and BindPad are skipped.|r"
+		end
+		summary:SetText(Summary(snap) .. "." .. note)
+	end
+
+	local radios = {}
+	for i, name in ipairs(list) do
+		local snap = db.snapshots[name]
+		local r = CreateFrame("CheckButton", "SkomsProfileSyncWelcomeRow" .. i, w, "UIRadioButtonTemplate")
+		r:SetPoint("TOPLEFT", 30, -90 - (i - 1) * 24)
+		local c = RAID_CLASS_COLORS[snap.class or ""]
+		local color = c and ("|cff%02x%02x%02x"):format(math.floor(c.r * 255 + 0.5), math.floor(c.g * 255 + 0.5), math.floor(c.b * 255 + 0.5)) or "|cffffffff"
+		_G[r:GetName() .. "Text"]:SetText(("%s  %s%s|r  |cff888888%s|r"):format(name, color, snap.char or "?", snap.date or ""))
+		r:SetChecked(name == selected)
+		r:SetScript("OnClick", function()
+			selected = name
+			for _, o in ipairs(radios) do o:SetChecked(o == r) end
+			Update()
+		end)
+		radios[i] = r
+	end
+	summary:SetPoint("TOPLEFT", 26, -98 - #list * 24)
+	Update()
+
+	DialogButton(w, "Import", "LEFT", function()
+		if InCombatLockdown() then Say("Not in combat.") return end
+		db.selected = selected
+		ApplySnap(db.snapshots[selected], selected, db.opts)
+		-- the apply runs over the next frames: the reload window comes when it is done
+		if runner:IsShown() then onFinish = function() ShowImported(selected) end end
+		w:Hide()
+	end)
+	DialogButton(w, "Not now", "RIGHT", function()
+		Say("You can import a setup any time with /sps." .. (never:GetChecked() and "" or " This window comes back at the next login."))
+		w:Hide()
+	end)
+	w:Show()
+end
+
+-- at login the Apply tab starts on the newest setup of this character's class
+local function SelectSameClass()
+	local _, class = UnitClass("player")
+	local best
+	for name, snap in pairs(db.snapshots) do
+		if snap.class == class and (not best or (snap.date or "") > (db.snapshots[best].date or "")) then best = name end
+	end
+	if best then db.selected = best end
+end
+
+local welcomeWait = CreateFrame("Frame")
+welcomeWait:Hide()
+local function MaybeWelcome()
+	local key = PlayerKey()
+	if db.seen[key] then return end
+	local list = WelcomeSetups()
+	if not db.opts.welcome or #list == 0 then return end
+	ShowWelcome(list)
+end
+-- a few seconds after the login, and after the intro cinematic of a new character
+-- after the reload that loaded the addons enabled by an apply: switch their profiles too
+local function ApplyPending()
+	local p = db.pending[PlayerKey()]
+	if not p then return end
+	db.pending[PlayerKey()] = nil
+	wipe(report)
+	ApplyProfiles(p, p.all)
+	Say(("'%s' finished. %s"):format(p.label or "?", report[1] or ""))
+end
+
+welcomeWait:SetScript("OnUpdate", function(self, elapsed)
+	self.left = (self.left or 3) - elapsed
+	if self.left > 0 or (InCinematic and InCinematic()) then return end
+	-- profiles can't be switched in combat (action bars)
+	if db.pending[PlayerKey()] and InCombatLockdown() then return end
+	self:Hide()
+	ApplyPending()
+	MaybeWelcome()
+end)
+
+-- ---------------------------------------------------------------------------------------------------------
 -- start-up and commands
 -- ---------------------------------------------------------------------------------------------------------
 local f = CreateFrame("Frame")
 f:RegisterEvent("ADDON_LOADED")
+f:RegisterEvent("PLAYER_LOGIN")
 f:SetScript("OnEvent", function(self, event, arg1)
+	if event == "PLAYER_LOGIN" then
+		SelectSameClass()
+		welcomeWait:Show()
+		self:UnregisterEvent("PLAYER_LOGIN")
+		return
+	end
 	if arg1 ~= ADDON then return end
 	SkomsProfileSyncDB = SkomsProfileSyncDB or {}
 	db = SkomsProfileSyncDB
@@ -1232,9 +1480,19 @@ f:SetScript("OnEvent", function(self, event, arg1)
 	db.macroBackup = nil
 	db.profileOff = db.profileOff or {}
 	db.opts = db.opts or {}
+	db.pending = db.pending or {}
 	for k, v in pairs(DEFAULT_OPTS) do if db.opts[k] == nil then db.opts[k] = v end end
+	if not db.seen then
+		-- first run with the welcome window: the characters already synced are not new
+		db.seen = {}
+		for _, snap in pairs(db.snapshots) do db.seen[snap.char or ""] = true end
+		for _, list in pairs(db.history) do
+			for _, snap in ipairs(list) do db.seen[snap.char or ""] = true end
+		end
+		for _, b in ipairs(db.backups) do db.seen[b.char or ""] = true end
+	end
 	LibStub("AceConfig-3.0"):RegisterOptionsTable(ADDON, Options)
-	LibStub("AceConfigDialog-3.0"):AddToBlizOptions(ADDON, ADDON)
+	LibStub("AceConfigDialog-3.0"):AddToBlizOptions(ADDON, "Skom's Profile Sync")
 	self:UnregisterEvent("ADDON_LOADED")
 end)
 

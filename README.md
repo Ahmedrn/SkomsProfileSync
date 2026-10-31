@@ -8,7 +8,9 @@ Set up one character, then copy it to all your alts in one click: action bars, k
 - **Keybinds,** including BindPad, macro and spell bindings, saved per character.
 - **Macros** created or updated, and the **BindPad** profile.
 - **Addon profiles** of every Ace3 addon (Bartender4, DBM, BigDebuffs and more). They are frozen when you save, so your main can keep changing.
+- **Addon list:** the same addons are enabled, with their profiles switched after the reload.
 - **Game settings:** about 200 interface options, plus show helm and cloak and the extra action bars.
+- **New characters** are offered your saved setups when they log in: one click and the alt is ready.
 - **Choose what to copy,** and keep the alt's own keybinds if you like.
 - **Safe:** every apply is backed up and can be undone, and the last 5 versions of each setup are kept.
 - **Storage cleanup:** see who uses each addon profile and delete the ones nobody needs.
